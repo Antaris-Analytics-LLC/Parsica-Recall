@@ -4,8 +4,8 @@ A deterministic benchmark for the memory of AI agents. It asks one question: whe
 
 Recall scores retrieval only. The judge never calls a model. The window it scores is set by the size of the store, not by the system being tested. Every number can be re-derived from the per-question records a run writes.
 
-- Version: `1.0.0b1`, a beta. Recall stays in beta until it has been adequately used or peer reviewed.
-- Spec: `recall/1.0`, in [docs/spec.md](docs/spec.md). Where the spec and the code disagree, the spec wins.
+- Version: `1.0.0b2`, a beta. Recall stays in beta until it has been adequately used or peer reviewed.
+- Spec: `recall/1.0`, in [docs/spec.md](https://github.com/Antaris-Analytics-LLC/Parsica-Recall/blob/main/docs/spec.md). Where the spec and the code disagree, the spec wins.
 - Current question set: `v11`, interim, over a public synthetic pool of 10,000 records. The schema has 13 categories.
 - License: MIT.
 
@@ -45,7 +45,7 @@ recall/1.0 track=none band=L N=10000 k=15 window=20 qset=v11@2e5b2c03 gold@15=87
 
 ## Run it on your memory system
 
-There are three ways in, and all three end in the same scorer. [docs/adapting.md](docs/adapting.md) is the full guide.
+There are three ways in, and all three end in the same scorer. [docs/adapting.md](https://github.com/Antaris-Analytics-LLC/Parsica-Recall/blob/main/docs/adapting.md) is the full guide.
 
 **1. A results file, with no code from this repository.** For a system in any language, or a hosted service.
 
@@ -95,7 +95,7 @@ The six adapters that ship here (`empty`, `random`, `echo`, `bm25`, `bm25stop`, 
 
 ## Build a benchmark from your own memories
 
-The public set measures a system on a shared pool. The question that usually matters more is how a system does on your memories. `generate-questions` writes a question set from any store's export, in the doc2query style: it reads records and writes the questions an agent would later ask about them, with the gold records pinned by id. [docs/doc2query.md](docs/doc2query.md) is the guide, end to end.
+The public set measures a system on a shared pool. The question that usually matters more is how a system does on your memories. `generate-questions` writes a question set from any store's export, in the doc2query style: it reads records and writes the questions an agent would later ask about them, with the gold records pinned by id. [docs/doc2query.md](https://github.com/Antaris-Analytics-LLC/Parsica-Recall/blob/main/docs/doc2query.md) is the guide, end to end.
 
 ```bash
 pip install "parsica-recall[generate]"     # adds the anthropic SDK, needed only for a live generation run
@@ -106,10 +106,21 @@ parsica-recall generate-questions --corpus ~/exports/my-store/corpus.jsonl --out
     --seed 7 --store-ids --max-cost 10       # a live run needs a spending limit
 ```
 
+The model can come from any of these, with your own key:
+
+| Provider | Flags | Install |
+| --- | --- | --- |
+| Anthropic | none (the default) | `pip install "parsica-recall[generate]"` |
+| OpenAI | `--provider openai` | `pip install "parsica-recall[openai]"` |
+| Google (the Gemini API) | `--provider google` | `pip install "parsica-recall[google]"` |
+| Any endpoint that speaks OpenAI's chat format, a local model included | `--provider openai --base-url URL --model NAME` | `pip install "parsica-recall[openai]"` |
+
+[docs/doc2query.md](https://github.com/Antaris-Analytics-LLC/Parsica-Recall/blob/main/docs/doc2query.md) covers each one: keys, default models, prices, and running on a model on your own machine.
+
 Three things to know before you run it:
 
-- **It is the one step that uses a model.** Scoring never does. Today the question builder runs on Claude through the Anthropic API, with your own key, and a set records which model wrote it.
-- **It sends some of your records to that API.** The frozen prompt and the text of the sampled records go out, never more than half the store. A record with the shape of a credential or of personal data (keys, tokens, email addresses, phone numbers, street addresses, card numbers) is never sent. That screen reads shapes, not meaning: a personal fact written in plain words can be sent.
+- **It is the one step that uses a model.** Scoring never does. A set records which provider and model wrote it.
+- **It sends some of your records to that provider.** The frozen prompt and the text of the sampled records go out, never more than half the store, under the provider's own terms (the guide says what each one's terms say; on Google, use a key from a project with billing turned on). A record with the shape of a credential or of personal data (keys, tokens, email addresses, phone numbers, street addresses, card numbers) is never sent. That screen reads shapes, not meaning: a personal fact written in plain words can be sent. A model on your own machine keeps everything on it.
 - **A set built from your store restates your memories.** Keep the set, its folder and its results out of public places. `--redact` makes results you can share.
 
 ## How scoring works
@@ -186,7 +197,7 @@ parsica-recall run --live --adapter custom --custom-adapter my_store.MyStoreAdap
 - Results go to `recall_live_<adapter>.json` next to the question file, and the runner refuses to write live results anywhere under the folder the harness sits in, because they hold store content. `--redact` replaces every returned record text with its hash and drops the question, answer and alternate fields. Share only redacted results.
 - A live result says `track=live`. It is compared with a track result only on skill, with N stated.
 
-[docs/live_http_adapter.md](docs/live_http_adapter.md) is a complete read-only adapter for a store behind HTTP.
+[docs/live_http_adapter.md](https://github.com/Antaris-Analytics-LLC/Parsica-Recall/blob/main/docs/live_http_adapter.md) is a complete read-only adapter for a store behind HTTP.
 
 ## The question set: v11
 
@@ -251,7 +262,7 @@ No sealed scoring is offered yet.
 
 ## The public pool
 
-Pool v1 (`data/pool-v1/`) is a synthetic agent-memory store under MIT: 10,000 records. Eight invented people each live 6 to 18 months of sessions with their own AI agent, and the pool is the records an agent-memory store would keep from those sessions. Every person in it is invented. The design is in [docs/pool.md](docs/pool.md), the persona files are in [scenarios/](scenarios/), and the frozen prompts are in [prompts/pool/](prompts/pool/).
+Pool v1 (`data/pool-v1/`) is a synthetic agent-memory store under MIT: 10,000 records. Eight invented people each live 6 to 18 months of sessions with their own AI agent, and the pool is the records an agent-memory store would keep from those sessions. Every person in it is invented. The design is in [docs/pool.md](https://github.com/Antaris-Analytics-LLC/Parsica-Recall/blob/main/docs/pool.md), the persona files are in [scenarios/](https://github.com/Antaris-Analytics-LLC/Parsica-Recall/tree/main/scenarios), and the frozen prompts are in [prompts/pool/](https://github.com/Antaris-Analytics-LLC/Parsica-Recall/tree/main/prompts/pool).
 
 Every record has `id` (its content id), `text`, `kind` (`user`, `agent` or `entry`), `ts` and `source` (a session id). The first 1,000 records, the core, carry planted material for every category: version chains, corrections, preference changes, threads across sessions and long-horizon facts.
 
@@ -274,7 +285,7 @@ Every release gate is code with a pass or a fail. Whether a question set may bac
 - **Standard tracks** (1k, 10k, 30k, 50k). The pool's first 10,000 records are here; a larger pool and the runner's track mode come later. Until then every result prints `standard=no`.
 - **Sealed scoring.** The sealed half exists and is committed to by hash. Nobody is scoring against it yet.
 - **Fullstack mode**, where an answer model reads the window. It is on the roadmap, and spec section 11 fixes its rules.
-- **Other model providers for the question builder.** Today it runs on Claude through the Anthropic API.
+- **Other providers for the pool generator.** The question builder runs on Anthropic, OpenAI, Google or an endpoint of your own; `generate-pool` runs on Anthropic only.
 
 ## Files
 
@@ -294,6 +305,6 @@ Every release gate is code with a pass or a fail. Whether a question set may bac
 
 ## License and contact
 
-MIT. Copyright (c) 2026 Antaris Analytics LLC. See [LICENSE](LICENSE).
+MIT. Copyright (c) 2026 Antaris Analytics LLC. See [LICENSE](https://github.com/Antaris-Analytics-LLC/Parsica-Recall/blob/main/LICENSE).
 
 Questions and reports: Info@Parsica.ai, or an issue on this repository.

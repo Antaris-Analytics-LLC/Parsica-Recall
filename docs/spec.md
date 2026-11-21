@@ -272,6 +272,8 @@ Two more rules apply to anything that ships in the public repo, written fresh fo
 
 How the generator carries out these steps is in [docs/generation.md](generation.md), and its frozen prompts are in [prompts/](../prompts/).
 
+*Amended November 21, 2026.* The generator model may come from any provider: Anthropic's API, OpenAI's, Google's Gemini API, or an endpoint that speaks OpenAI's chat format. Step 4's record of the generator model then also names the provider and the endpoint. Nothing else changes: the same frozen prompts, the same checks and lint, and the same oracle check apply to every provider's items, and a set is scored the same way whoever wrote it.
+
 **Versioning.** Question sets are immutable once published. A fix is a new version; results name the version; the comparison tool refuses to compare across versions. v11 is the first published set under this spec.
 
 ## 10. Live mode and privacy

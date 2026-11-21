@@ -8,7 +8,7 @@ The path has four steps:
 
 1. [Export your store](#1-export-your-store) to one file.
 2. [Estimate](#2-estimate-the-cost) the cost. No call is made.
-3. [Build](#3-build-the-set) the set, with your own API key and a spending limit.
+3. [Build](#3-build-the-set) the set, with your own API key and a spending limit, on [the provider you choose](#choose-a-provider).
 4. [Run the benchmark](#4-run-the-benchmark-on-it) on it.
 
 Read [What leaves your machine](#what-leaves-your-machine) before step 3. Commands are written as `parsica-recall ...`; from a clone with nothing installed, `python -m parsica_recall ...` does the same.
@@ -60,6 +60,7 @@ parsica-recall generate-questions --corpus ~/exports/my-store/corpus.jsonl --out
 What to look at:
 
 - **The expected cost and the worst case.** With the default of 25 questions per category, the estimate for a store with `ts` and `source` comes to about $4.50 on `claude-sonnet-5-5` and about $8.80 on `claude-opus-5-5`, with a worst case about a third higher. The cost follows the number of questions, not the size of the store.
+- **On another provider.** The estimate's guesses for tokens per call were measured on Claude, and a reasoning model also spends output tokens thinking, so for an OpenAI, Gemini or other model build a small pilot first (`--targets 2`), then estimate again with `--estimate-from` and the pilot's folder. The estimate says so when you run it.
 - **Categories marked `short`.** These are expected to end under their target, most often the categories about facts that changed, which need pairs of records.
 - **The sample cap.** The generator never shows the model more than half of the eligible records. On a small store that cap is reached first, and the set is smaller.
 
@@ -70,11 +71,13 @@ Options that change the cost:
 | Flag | What it does |
 | --- | --- |
 | `--targets` | Questions per category: one number for all, or pairs such as `direct_recall_user=10,abstention=5`. The default is 25. Start small. |
-| `--model` | The model that writes the questions. The default is `claude-sonnet-5-5`. A price is on file for `claude-sonnet-5-5`, `claude-opus-5-5` and `claude-fable-5-1`; a live run needs a model with a price, so the limit can be counted. |
+| `--provider` | Who runs the model: `anthropic` (the default), `openai` or `google`. See [Choose a provider](#choose-a-provider). |
+| `--model` | The model that writes the questions. Each provider has a default; the models with a price on file are listed under [Choose a provider](#choose-a-provider). A live run needs a price, so the limit can be counted. |
+| `--price-in`, `--price-out` | The model's prices in US dollars per million tokens, for a model with no price on file or a price that has gone stale. Recorded in the set. |
 
 ## 3. Build the set
 
-The question builder is the one step of Recall that uses a model, and today it runs on Claude through the Anthropic API. Scoring never calls a model.
+The question builder is the one step of Recall that uses a model. It runs on Claude through the Anthropic API by default, on an OpenAI or Gemini model, or on any model behind an endpoint that speaks OpenAI's chat format, a model on your own machine included. Scoring never calls a model.
 
 ```bash
 pip install "parsica-recall[generate]"          # adds the anthropic SDK
@@ -89,7 +92,54 @@ parsica-recall generate-questions --corpus ~/exports/my-store/corpus.jsonl --out
 - `--out` is a folder that does not exist yet, outside the folder the harness sits in. Its name becomes the set's name.
 - `--seed` fixes which records are sampled. Another seed gives another set.
 - `--max-cost` is required for a live run: the most the whole set may cost, in US dollars. When the cost passes it, the run stops cleanly before its next call and exits 3.
-- `--api-key-env NAME` reads the key from another environment variable, and sends every call to `api.anthropic.com` only.
+- `--api-key-env NAME` reads the key from another environment variable, and sends every call to the provider's official endpoint only.
+
+### Choose a provider
+
+| Provider | Flags | Install | Key | Default model |
+| --- | --- | --- | --- | --- |
+| Anthropic | none (the default) | `pip install "parsica-recall[generate]"` | `ANTHROPIC_API_KEY` | `claude-sonnet-5-5` |
+| OpenAI | `--provider openai` | `pip install "parsica-recall[openai]"` | `OPENAI_API_KEY` | `gpt-6.2-sol` |
+| Google (the Gemini API) | `--provider google` | `pip install "parsica-recall[google]"` | `GEMINI_API_KEY` or `GOOGLE_API_KEY` | `gemini-4-hydrogen` |
+| An endpoint of your own | `--provider openai --base-url URL --model NAME` | `pip install "parsica-recall[openai]"` | none, or the variable you name with `--api-key-env` | none: `--model` is required |
+
+```bash
+pip install "parsica-recall[openai]"
+export OPENAI_API_KEY=...
+parsica-recall generate-questions --provider openai --check-api
+parsica-recall generate-questions --provider openai --corpus ~/exports/my-store/corpus.jsonl \
+    --out ~/recall-sets/my-store-v1 --seed 7 --store-ids --max-cost 10
+```
+
+For Google, the same with `[google]`, `GEMINI_API_KEY` and `--provider google`. Read [what Google's terms say](#what-leaves-your-machine) about its unpaid tier before you send it your store.
+
+`--model` picks another model of the same provider. Prices are on file for:
+
+- Anthropic: `claude-sonnet-5-5`, `claude-opus-5-5`, `claude-fable-5-1`
+- OpenAI: `gpt-6.2-astra`, `gpt-6.2-sol`, `gpt-6.1-terra`, `gpt-6-luna`
+- Google: `gemini-4-carbon`, `gemini-4-argon`, `gemini-4-neon`, `gemini-4-hydrogen`, `gemini-3.5-flash-lite`
+
+They were taken from each provider's price list in October and November 2026 (Gemini 4 Carbon and Argon at the prices they move to on December 1, 2026), and prices change. For any other model, or when one of these has gone stale, give the prices yourself with `--price-in` and `--price-out`, in US dollars per million tokens. The set records which prices its cost was counted at.
+
+Every provider gets the same request: the category's frozen prompt as the system message, the sampled records as the user message, and the JSON schema the reply must follow (in strict mode on OpenAI). OpenAI and Gemini models are asked to reason at high effort, with room for 32,000 output tokens; their reasoning tokens are billed as output, and the call log and the manifest count them. The prompts were written while building sets with Claude. Every other model follows the same prompts, and every item it writes goes through the same checks and the same lint, so a model that writes worse questions freezes fewer of them; it never lowers the bar.
+
+### A model on your own machine, or any compatible endpoint
+
+`--base-url` sends the calls to any endpoint that speaks OpenAI's chat format: a local server such as Ollama, vLLM or LM Studio, or a hosted service with an OpenAI-compatible API.
+
+```bash
+# a local Ollama server, which answers at http://localhost:11434/v1
+parsica-recall generate-questions --provider openai --base-url http://localhost:11434/v1 --model MODEL \
+    --corpus ~/exports/my-store/corpus.jsonl --out ~/recall-sets/my-store-v1 --seed 7 --store-ids \
+    --price-in 0 --price-out 0 --max-cost 0
+```
+
+- **The model's name.** `--model` takes the name the server knows the model by.
+- **The key.** The endpoint gets a key only from the variable you name with `--api-key-env`, never your `OPENAI_API_KEY`, so an OpenAI key cannot reach another service by accident. A key goes over `https://` only, unless the endpoint is on your own machine.
+- **The price.** No price is on file for an endpoint of your own. A local model costs nothing per token, so `--price-in 0 --price-out 0` lets `--max-cost 0` pass. For a hosted service, give its prices.
+- **What it is sent.** The prompt, the records and the JSON schema, and nothing else: no reasoning setting, and no output cap unless you set one with `--max-output-tokens`.
+- **The JSON schema.** The server has to support `response_format` with a JSON schema (structured output); check its documentation. A reply that does not follow the schema yields no items and is counted, so try `--targets 1` first.
+- **The context window.** A request runs to about 3,600 input tokens and to 6,200 at most (measured over the 2,431 calls that built v11), and a reply is usually under 1,200 tokens, more for a model that reasons. Give the server a context window of 16,000 tokens or more; some servers start with a smaller one and cut the prompt short.
 
 What happens in the run:
 
@@ -193,7 +243,14 @@ It prints which questions were won and lost. The two runs have to share the ques
 
 ## What leaves your machine
 
-One step sends data anywhere: building the set (step 3). It goes to the Anthropic API, under your own key.
+One step sends data anywhere: building the set (step 3). It goes to the provider you chose, under your own key: the Anthropic API, the OpenAI API, Google's Gemini API, or the endpoint you named with `--base-url`. An endpoint on your own machine keeps everything on it.
+
+**Each provider's terms apply to what it is sent.** Read them before you send your store:
+
+- **Google.** Google's [Gemini API terms](https://ai.google.dev/gemini-api/terms) let it use what is sent to its unpaid tier, the free one, to improve its products, and people may read it; they ask you not to send personal or confidential information there. The paid terms do not allow that use, and they apply when the key belongs to a Google Cloud project with billing turned on. Build a set from your own store with such a key only.
+- **OpenAI.** The request asks OpenAI not to keep a stored copy of the reply (`store=false`). OpenAI's [policy for API data](https://openai.com/enterprise-privacy/) says how long it keeps requests and whether they train its models.
+- **Anthropic.** Anthropic's commercial terms for the API apply.
+- **An endpoint of your own.** Whoever runs it.
 
 **What is sent.** The category's frozen prompt, and the text of the sampled records with their `id`, `kind`, `ts` and `source`. Never the whole store: at most half of the eligible records are ever shown. A retry names the words of an answer that leaked and shows no other record.
 
@@ -201,7 +258,7 @@ One step sends data anywhere: building the set (step 3). It goes to the Anthropi
 
 **The limit of that screen.** It reads shapes, not meaning. A record that says, in plain words, something private about you or someone else has no shape to catch and can be sent. If your store holds records you would not send to an API, take them out of the export first.
 
-**Your key.** It is read from the environment by the SDK, or from the one variable you name. It is never printed, logged or written, and it is taken out of every error message.
+**Your key.** It is read from the environment by the provider's SDK (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY` or `GOOGLE_API_KEY`), or from the one variable you name with `--api-key-env`. An endpoint of your own gets a key only from that variable. The key is never printed, logged or written, and it is taken out of every error message.
 
 **What is written to disk.** Only the `--out` folder (and `--sealed-out`): the set, a full copy of your export, every record shown to the model, and every call with its reply. Nothing is written until the first reply arrives.
 
@@ -218,7 +275,7 @@ A set built from your store restates your memories. Its questions quote them and
 
 ## Repeating a build
 
-Current models take no temperature setting, so a model's answers cannot be repeated. Everything else is fixed by the corpus, the seed, the targets and the prompts. Every reply is recorded, and `--replay` rebuilds the set from that record byte for byte, without the API and without a key:
+Current models take no temperature setting, so a model's answers cannot be repeated. Everything else is fixed by the corpus, the seed, the targets and the prompts. Every reply is recorded, and `--replay` rebuilds the set from that record byte for byte, without the API and without a key. Give it the same `--provider`, `--model` and `--base-url` the set was built with:
 
 ```bash
 parsica-recall generate-questions --corpus ~/exports/my-store/corpus.jsonl --out ~/recall-sets/my-store-v1-check \

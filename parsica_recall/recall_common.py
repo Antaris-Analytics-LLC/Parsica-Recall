@@ -29,7 +29,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 # ---------------------------------------------------------------------------
 
 SPEC_VERSION = "recall/1.0"
-HARNESS_VERSION = "1.0.0b1"
+HARNESS_VERSION = "1.0.0b2"
 CURRENT_QSET = "v11"          # since October 22, 2026
 SEALED_SUFFIX = "-sealed"     # a split set's sealed half is named after its public half: v11 and v11-sealed
 

@@ -29,8 +29,12 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
-# Only a live run of the question builder or the pool generator calls a model.
+# Only a live run of the question builder or the pool generator calls a model. generate is
+# the Anthropic SDK (both); openai and google are the question builder's other providers,
+# at the versions the provider tests were run with or later.
 generate = ["anthropic>=2"]
+openai = ["openai>=3.57"]
+google = ["google-genai>=3.6"]
 
 [project.scripts]
 parsica-recall = "parsica_recall.cli:main"
