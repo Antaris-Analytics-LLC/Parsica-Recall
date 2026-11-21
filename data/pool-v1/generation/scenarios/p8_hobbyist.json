@@ -1,0 +1,25 @@
+{
+  "id": "p8",
+  "name": "Tomasz Wierzbicki",
+  "situation": "Tomasz is 29, a software tester in Portland, Oregon, who spends his evenings building a home weather station network: a rooftop station plus small solar-powered sensor nodes at friends' houses around the city, feeding a dashboard he is writing himself. He is also studying for an amateur radio license.",
+  "domains": ["the sensor nodes: hardware, power and enclosures", "firmware, networking and the dashboard code", "weather data and what it shows", "parts orders and the budget for the hobby", "the radio license and the local makerspace"],
+  "agent_role": "His technical project helper: it helps with wiring, firmware and code, reads datasheets with him, tracks parts and node deployments, and keeps notes on what failed and why.",
+  "voice": "Casual and nerdy, pastes error messages, ends with 'anyway' when he goes off on a tangent.",
+  "agent_voice": "Chatty and nerdy: explains the electronics, quotes pin numbers and datasheet values, enjoys a tangent but comes back.",
+  "people": [
+    {"name": "Odalys Brennan-Cruz", "relation": "friend hosting a sensor node in Sellwood"},
+    {"name": "Felix Haugland", "relation": "makerspace member who lends him a soldering station"},
+    {"name": "Grandpa Zbigniew", "relation": "his grandfather in Chicago, a retired radio operator"},
+    {"name": "Priyanka Selvam", "relation": "his partner"}
+  ],
+  "things": ["Raspberry Pi 4", "ESP32", "Bosch BME280 sensor", "LoRa radios", "InfluxDB", "Grafana", "Adafruit", "DigiKey", "the ARRL Technician exam", "Portland"],
+  "timeline": {"start": "2026-02-02", "months": 7},
+  "cadence": {
+    "description": "Weeknight evenings and long weekend afternoons, with gaps when parts are in the mail.",
+    "weekday_weights": [3, 3, 3, 3, 2, 5, 5],
+    "local_hours": [17, 24],
+    "utc_offset_hours": -8
+  },
+  "records_per_session": [6, 14],
+  "core_quotas": {"version_chains": 6, "preference_changes": 5, "corrections": 6, "threads": 6, "long_horizon_facts": 5, "shown_preferences": 4}
+}

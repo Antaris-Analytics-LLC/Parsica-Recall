@@ -1,0 +1,116 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "parsica-recall"
+dynamic = ["version"]
+description = "A deterministic, LLM agnostic benchmark for agentic memory systems."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Antaris Analytics LLC", email = "Info@Parsica.ai" }]
+keywords = ["benchmark", "retrieval", "agent memory", "evaluation", "recall", "doc2query"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Testing",
+]
+# The harness is standard library only. Scoring, linting and comparing never need anything else.
+dependencies = []
+
+[project.optional-dependencies]
+# Only a live run of the question builder or the pool generator calls a model.
+generate = ["anthropic>=2"]
+
+[project.scripts]
+parsica-recall = "parsica_recall.cli:main"
+
+[project.urls]
+Repository = "https://github.com/Antaris-Analytics-LLC/Parsica-Recall"
+Issues = "https://github.com/Antaris-Analytics-LLC/Parsica-Recall/issues"
+Specification = "https://github.com/Antaris-Analytics-LLC/Parsica-Recall/blob/main/docs/spec.md"
+
+[tool.hatch.version]
+path = "parsica_recall/recall_common.py"
+pattern = 'HARNESS_VERSION = "(?P<version>[^"]+)"'
+
+# The wheel is the package plus the files it reads at run time, placed inside the package
+# folder in the layout they have in the repository (recall_common.ROOT_DIR finds them in
+# either place). Every data file is named one by one: nothing is picked up by a folder
+# sweep. tools/check_dist.py checks a built wheel and sdist against tools/dist_files.txt.
+[tool.hatch.build.targets.wheel]
+packages = ["parsica_recall"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"README.md" = "parsica_recall/README.md"
+"parsica_recall_lint_spec.json" = "parsica_recall/parsica_recall_lint_spec.json"
+"prompts/abstention.md" = "parsica_recall/prompts/abstention.md"
+"prompts/correction_handling.md" = "parsica_recall/prompts/correction_handling.md"
+"prompts/cross_session.md" = "parsica_recall/prompts/cross_session.md"
+"prompts/direct_recall_agent.md" = "parsica_recall/prompts/direct_recall_agent.md"
+"prompts/direct_recall_user.md" = "parsica_recall/prompts/direct_recall_user.md"
+"prompts/entity_attribution.md" = "parsica_recall/prompts/entity_attribution.md"
+"prompts/implicit_preference.md" = "parsica_recall/prompts/implicit_preference.md"
+"prompts/knowledge_update.md" = "parsica_recall/prompts/knowledge_update.md"
+"prompts/long_horizon.md" = "parsica_recall/prompts/long_horizon.md"
+"prompts/paraphrase_recall.md" = "parsica_recall/prompts/paraphrase_recall.md"
+"prompts/recency_preference.md" = "parsica_recall/prompts/recency_preference.md"
+"prompts/temporal_awareness.md" = "parsica_recall/prompts/temporal_awareness.md"
+"prompts/vocabulary_gap.md" = "parsica_recall/prompts/vocabulary_gap.md"
+"prompts/pool/core_session.md" = "parsica_recall/prompts/pool/core_session.md"
+"prompts/pool/tail_session.md" = "parsica_recall/prompts/pool/tail_session.md"
+"scenarios/p1_founder.json" = "parsica_recall/scenarios/p1_founder.json"
+"scenarios/p2_home_cook.json" = "parsica_recall/scenarios/p2_home_cook.json"
+"scenarios/p3_grad_student.json" = "parsica_recall/scenarios/p3_grad_student.json"
+"scenarios/p4_small_business.json" = "parsica_recall/scenarios/p4_small_business.json"
+"scenarios/p5_researcher.json" = "parsica_recall/scenarios/p5_researcher.json"
+"scenarios/p6_traveler.json" = "parsica_recall/scenarios/p6_traveler.json"
+"scenarios/p7_parent.json" = "parsica_recall/scenarios/p7_parent.json"
+"scenarios/p8_hobbyist.json" = "parsica_recall/scenarios/p8_hobbyist.json"
+"data/v11/corpus.jsonl" = "parsica_recall/data/v11/corpus.jsonl"
+"data/v11/questions.json" = "parsica_recall/data/v11/questions.json"
+"data/v11/manifest.json" = "parsica_recall/data/v11/manifest.json"
+"data/v11/lint_report.json" = "parsica_recall/data/v11/lint_report.json"
+"data/v11/reference.json" = "parsica_recall/data/v11/reference.json"
+"data/v11/generation/prompts/abstention.md" = "parsica_recall/data/v11/generation/prompts/abstention.md"
+"data/v11/generation/prompts/correction_handling.md" = "parsica_recall/data/v11/generation/prompts/correction_handling.md"
+"data/v11/generation/prompts/cross_session.md" = "parsica_recall/data/v11/generation/prompts/cross_session.md"
+"data/v11/generation/prompts/direct_recall_agent.md" = "parsica_recall/data/v11/generation/prompts/direct_recall_agent.md"
+"data/v11/generation/prompts/direct_recall_user.md" = "parsica_recall/data/v11/generation/prompts/direct_recall_user.md"
+"data/v11/generation/prompts/entity_attribution.md" = "parsica_recall/data/v11/generation/prompts/entity_attribution.md"
+"data/v11/generation/prompts/implicit_preference.md" = "parsica_recall/data/v11/generation/prompts/implicit_preference.md"
+"data/v11/generation/prompts/knowledge_update.md" = "parsica_recall/data/v11/generation/prompts/knowledge_update.md"
+"data/v11/generation/prompts/long_horizon.md" = "parsica_recall/data/v11/generation/prompts/long_horizon.md"
+"data/v11/generation/prompts/paraphrase_recall.md" = "parsica_recall/data/v11/generation/prompts/paraphrase_recall.md"
+"data/v11/generation/prompts/recency_preference.md" = "parsica_recall/data/v11/generation/prompts/recency_preference.md"
+"data/v11/generation/prompts/temporal_awareness.md" = "parsica_recall/data/v11/generation/prompts/temporal_awareness.md"
+"data/v11/generation/prompts/vocabulary_gap.md" = "parsica_recall/data/v11/generation/prompts/vocabulary_gap.md"
+
+# The source archive holds what a wheel is built from, and nothing else: the pool, the
+# tests and the docs live in the repository.
+[tool.hatch.build.targets.sdist]
+only-include = [
+    "parsica_recall",
+    "parsica_recall_lint_spec.json",
+    "prompts",
+    "scenarios",
+    "data/v11/corpus.jsonl",
+    "data/v11/questions.json",
+    "data/v11/manifest.json",
+    "data/v11/lint_report.json",
+    "data/v11/reference.json",
+    "data/v11/generation/prompts",
+    "README.md",
+    "LICENSE",
+    "pyproject.toml",
+]

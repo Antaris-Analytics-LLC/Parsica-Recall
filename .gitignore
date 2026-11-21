@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+venv/
+
+# Builds (python -m build)
+/dist/
+/build/
+
+# Benchmark outputs. The runner writes results/<qset>_<adapter>.json in the folder it is
+# run from; a question set's own files under data/ are committed.
+/results/
+
+# The sealed half of a public question set is never committed to this repository.
+/sealed/
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/

@@ -1,0 +1,25 @@
+{
+  "id": "p3",
+  "name": "Anjali Ramaswamy",
+  "situation": "Anjali is 28, a fourth-year PhD student in hydrology at the University of Utah in Salt Lake City. Her dissertation models how earlier snowmelt in the Wasatch Range changes late-summer streamflow. She teaches a lab section, applies for fellowships, and runs field trips to her snow sensor sites.",
+  "domains": ["dissertation research: data, models and code", "writing chapters, papers and fellowship applications", "fieldwork at the snow sensor sites", "teaching the lab section", "grad school life, money and plans after the PhD"],
+  "agent_role": "Her research and writing assistant: it helps debug her Python and R code, reads and summarizes papers, tracks deadlines and committee feedback, and keeps notes on her experiments.",
+  "voice": "Precise and slightly anxious, with lots of parentheses; she writes in bursts late at night.",
+  "agent_voice": "Careful and academic: hedges where the data is thin, cites papers by first author and year, suggests the next check to run.",
+  "people": [
+    {"name": "Prof. Henrik Solberg", "relation": "her advisor"},
+    {"name": "Dr. Maya Kitchell", "relation": "a committee member in atmospheric sciences"},
+    {"name": "Tobias Wendt", "relation": "labmate who shares the field truck"},
+    {"name": "Nikhil Ramaswamy", "relation": "her younger brother in Austin"}
+  ],
+  "things": ["Python", "xarray", "R", "SNOTEL", "USGS streamflow gauges", "Overleaf", "Zotero", "the University of Utah", "Little Cottonwood Canyon", "National Science Foundation"],
+  "timeline": {"start": "2025-08-18", "months": 14},
+  "cadence": {
+    "description": "Most days, often late at night, quieter during field trips and around holidays.",
+    "weekday_weights": [3, 3, 3, 3, 2, 2, 3],
+    "local_hours": [10, 24],
+    "utc_offset_hours": -7
+  },
+  "records_per_session": [6, 14],
+  "core_quotas": {"version_chains": 6, "preference_changes": 5, "corrections": 6, "threads": 6, "long_horizon_facts": 5, "shown_preferences": 4}
+}

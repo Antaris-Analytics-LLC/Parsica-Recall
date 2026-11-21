@@ -1,0 +1,25 @@
+{
+  "id": "p1",
+  "name": "Teodora Valdivia",
+  "situation": "Teodora (Teo) is 34 and lives in Tucson, Arizona. She left a hospital IT job to build Kennelbook, a scheduling and reminder app for small veterinary clinics, as a solo founder with one part-time contract developer. She works in long coding sessions with an AI coding agent, sells to clinics herself, and is trying to reach paying customers before her savings run out.",
+  "domains": ["building and shipping the Kennelbook web app", "pilot clinics and their feedback", "pricing, billing and the runway", "hiring and working with a contractor", "founder life: routines, health, family in Tucson"],
+  "agent_role": "Her coding agent and project notebook: it writes and reviews code with her in the repository, runs commands, tracks bugs and decisions, and keeps notes on the product, the pilot clinics and the business.",
+  "voice": "Short, direct messages, often lowercase, with shorthand like 'pls' and 'tmrw'; long when she is thinking out loud about the business.",
+  "agent_voice": "Terse and technical: names files, commands, test results and versions; short bullet-like sentences; flags risks plainly.",
+  "people": [
+    {"name": "Marcus Oyelaran", "relation": "part-time contract developer"},
+    {"name": "Dr. Lupita Encinas", "relation": "owner of Saguaro Paws Veterinary, the first pilot clinic"},
+    {"name": "Renata Valdivia", "relation": "her older sister"},
+    {"name": "Ignacio Ferro", "relation": "a friend who runs a small accounting practice"}
+  ],
+  "things": ["Django", "PostgreSQL", "Fly.io", "Stripe", "Twilio", "GitHub Actions", "Sentry", "Figma", "Notion", "Tucson", "Arizona Small Business Development Center"],
+  "timeline": {"start": "2025-09-01", "months": 12},
+  "cadence": {
+    "description": "Weekday working sessions, late mornings into the night, with lighter weekend sessions before demos.",
+    "weekday_weights": [4, 4, 4, 4, 3, 1, 2],
+    "local_hours": [9, 23],
+    "utc_offset_hours": -7
+  },
+  "records_per_session": [6, 14],
+  "core_quotas": {"version_chains": 6, "preference_changes": 5, "corrections": 6, "threads": 5, "long_horizon_facts": 5, "shown_preferences": 5}
+}

@@ -1,0 +1,588 @@
+{
+  "pool": "pool-v1",
+  "spec": "recall/1.0",
+  "status": "partial",
+  "status_reason": "partial: total 10000, not 50000",
+  "id_scheme": "content",
+  "license": "MIT",
+  "files": {
+    "corpus.jsonl": "cea80a56bda88000f02ed3b07be9e43679fd41d20b6e8a40221fb23ef21fa1af",
+    "generation/records.jsonl": "84a45d83d2192f97b9125732e8e4667e1f17044dfe79267098c89662ff525c14",
+    "generation/dropped.jsonl": "23980e886aa0cefa1b7d8f23bc35abc297646a668e727e16ad6af9e5555c3930",
+    "generation/plan.json": "3fd01ac7a9afb0d59c62b2f2c44dfc9f49ea0de9bb985b9acac5abd4e4cedb25",
+    "generation/states.json": "31638758057f055eb9f4f5cc7ed2cc67f34f87be83b13755e71443b926b9d1ab",
+    "generation/calls-0001.jsonl": "4415bfed2ff8ba5e9a7876c2c983d2d01573f080334ff187dee2f9c89a061307",
+    "generation/calls-0002.jsonl": "7594f794ed99e76f643c9e7239d82ede06e72c5069cc04deca6a9a0d8cce1acb"
+  },
+  "layout": {
+    "core": {
+      "first_line": 1,
+      "last_line": 1000,
+      "order": "ts, then persona, session, position"
+    },
+    "tail": {
+      "first_line": 1001,
+      "last_line": 10000,
+      "order": "seeded: (persona, month) groups, each shuffled, interleaved by size"
+    },
+    "tracks": {
+      "1k": {
+        "N": 1000,
+        "available": true,
+        "records": "the first N lines of corpus.jsonl"
+      },
+      "10k": {
+        "N": 10000,
+        "available": true,
+        "records": "the first N lines of corpus.jsonl"
+      },
+      "30k": {
+        "N": 30000,
+        "available": false,
+        "records": "the first N lines of corpus.jsonl"
+      },
+      "50k": {
+        "N": 50000,
+        "available": false,
+        "records": "the first N lines of corpus.jsonl"
+      }
+    }
+  },
+  "model": {
+    "requested": "claude-sonnet-5-5",
+    "served": [
+      "claude-sonnet-5-5"
+    ],
+    "effort": {
+      "core": "high",
+      "tail": "medium"
+    },
+    "effort_by_call": {
+      "high": 99,
+      "medium": 991
+    },
+    "max_tokens": 32000,
+    "streaming": true,
+    "prompt_caching": "the system prompt, and the user message up to cache_split (the persona; in the tail also the core lists)",
+    "server_side_fallbacks": false,
+    "sdk": "anthropic 1.17.0",
+    "started": "2026-10-21T06:22:26Z",
+    "finished": "2026-10-21T08:49:54Z",
+    "calls": 1090,
+    "input_tokens": 10729487,
+    "output_tokens": 2758033,
+    "cache_creation_input_tokens": 164331,
+    "cache_read_input_tokens": 16804891,
+    "cost_usd": 52.81,
+    "cost_note": "from the call log's token counts at the prices in PRICES; the bill is the authority",
+    "unusable_calls": 0,
+    "sessions_lost": 0
+  },
+  "prompts": {
+    "core_session.md": {
+      "file": "prompts/pool/core_session.md",
+      "sha256": "30a64524037f9e52ced3d777a75df814ba1bdae0c371c66f16b7a355fc576b5b"
+    },
+    "tail_session.md": {
+      "file": "prompts/pool/tail_session.md",
+      "sha256": "841d1bcbe7156890f086308115b84c12c95a9e80076e45c64634479cc21d0993"
+    }
+  },
+  "scenarios": {
+    "p1": {
+      "file": "scenarios/p1_founder.json",
+      "sha256": "d70775c6759e6a95c6f9c4009551cd86a8511309d1dfd4221df0fe5c585c2671",
+      "name": "Teodora Valdivia"
+    },
+    "p2": {
+      "file": "scenarios/p2_home_cook.json",
+      "sha256": "e2367d47d39e51968a69b750156979db38118ac023ef611fdeb5bf0bdeb210a1",
+      "name": "Desmond Achterberg"
+    },
+    "p3": {
+      "file": "scenarios/p3_grad_student.json",
+      "sha256": "b62ef1141d0eb8bc325e1039f740bd176eb447b8d81c611bf50df96951c229f3",
+      "name": "Anjali Ramaswamy"
+    },
+    "p4": {
+      "file": "scenarios/p4_small_business.json",
+      "sha256": "ccf54b21c2dd4fe6f85e2a45ed4074c0be1342e5e79820cd6e4eaea2ad0e30fe",
+      "name": "Gus Pappadakis"
+    },
+    "p5": {
+      "file": "scenarios/p5_researcher.json",
+      "sha256": "dc829c374b87e7f57fe9a2671da1367c8f579ec4d637e429ccbbb61cc3e9cfc9",
+      "name": "Ilse Marquardt"
+    },
+    "p6": {
+      "file": "scenarios/p6_traveler.json",
+      "sha256": "872d1fa17753d2f2c5cdf2e2f067b390119e00652f96b0a56501c47d6c05f832",
+      "name": "Kwabena Asante-Moreira"
+    },
+    "p7": {
+      "file": "scenarios/p7_parent.json",
+      "sha256": "d7b8ac3bf38011f7bd1e22935e9cc14081466f48827069e2c2dc40f26a7f6a9b",
+      "name": "Bethany Kowalczyk"
+    },
+    "p8": {
+      "file": "scenarios/p8_hobbyist.json",
+      "sha256": "030f9ac6af38e9dda890bf628e672be4f35ec69f1e895ec3542f98059e7d92e2",
+      "name": "Tomasz Wierzbicki"
+    }
+  },
+  "plan": {
+    "seed": 1,
+    "core": 1000,
+    "total": 10000,
+    "personas": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "core_shares": {
+      "p1": 125,
+      "p2": 125,
+      "p3": 125,
+      "p4": 125,
+      "p5": 125,
+      "p6": 125,
+      "p7": 125,
+      "p8": 125
+    },
+    "tail_shares": {
+      "p1": 1125,
+      "p2": 1125,
+      "p3": 1125,
+      "p4": 1125,
+      "p5": 1125,
+      "p6": 1125,
+      "p7": 1125,
+      "p8": 1125
+    },
+    "quotas": {
+      "p1": {
+        "version_chains": 6,
+        "preference_changes": 5,
+        "corrections": 6,
+        "threads": 5,
+        "long_horizon_facts": 5,
+        "shown_preferences": 5
+      },
+      "p2": {
+        "version_chains": 6,
+        "preference_changes": 5,
+        "corrections": 6,
+        "threads": 5,
+        "long_horizon_facts": 5,
+        "shown_preferences": 5
+      },
+      "p3": {
+        "version_chains": 6,
+        "preference_changes": 5,
+        "corrections": 6,
+        "threads": 6,
+        "long_horizon_facts": 5,
+        "shown_preferences": 4
+      },
+      "p4": {
+        "version_chains": 7,
+        "preference_changes": 4,
+        "corrections": 6,
+        "threads": 5,
+        "long_horizon_facts": 5,
+        "shown_preferences": 5
+      },
+      "p5": {
+        "version_chains": 6,
+        "preference_changes": 5,
+        "corrections": 6,
+        "threads": 6,
+        "long_horizon_facts": 5,
+        "shown_preferences": 4
+      },
+      "p6": {
+        "version_chains": 7,
+        "preference_changes": 5,
+        "corrections": 6,
+        "threads": 5,
+        "long_horizon_facts": 5,
+        "shown_preferences": 5
+      },
+      "p7": {
+        "version_chains": 6,
+        "preference_changes": 5,
+        "corrections": 6,
+        "threads": 5,
+        "long_horizon_facts": 5,
+        "shown_preferences": 5
+      },
+      "p8": {
+        "version_chains": 6,
+        "preference_changes": 5,
+        "corrections": 6,
+        "threads": 6,
+        "long_horizon_facts": 5,
+        "shown_preferences": 4
+      }
+    },
+    "quota_reference": 125,
+    "not_placed": {},
+    "sessions_planned": 1090,
+    "makeup_sessions": 0,
+    "directives_asked": 573,
+    "directives_reported": 573,
+    "events_without_a_kept_record": 0,
+    "events_not_asked_for": 0,
+    "directives_lost": 0,
+    "entry_share": 0.15,
+    "entry_words": [
+      100,
+      800
+    ],
+    "record_gap_seconds": [
+      40,
+      420
+    ],
+    "session_gap_minutes": 180,
+    "max_attempts": 3,
+    "makeup_sessions_per_round": 3,
+    "makeup_rounds": 3,
+    "facts_in_state": 200,
+    "core_drop_rate_per_mille": 0,
+    "tail_overask_per_mille": 100,
+    "tail_planned": {
+      "p1": 1238,
+      "p2": 1238,
+      "p3": 1238,
+      "p4": 1238,
+      "p5": 1238,
+      "p6": 1238,
+      "p7": 1238,
+      "p8": 1238
+    },
+    "tail_overask_rule": "max(100, the core's drop rate + 50) per mille; the surplus is trimmed by a seeded even spread",
+    "makeup_minimum": "a make-up session is never smaller than the persona's smallest session"
+  },
+  "screens": {
+    "min_tokens": 6,
+    "entry_words": [
+      100,
+      800
+    ],
+    "secrets_and_pii": "lint_validator.scan_secrets_pii, the NO_SECRETS_OR_PII_POOL shapes; a record that matches is dropped, never edited; its text is left out of the corpus, dropped.jsonl and the state (and so of every later request), and stays only in the raw reply in the call log, which replay needs",
+    "state_lines_screened": 3,
+    "calls_with_secret_or_pii_shapes": 5,
+    "near_copy_rule": "each covers at least 0.9 of the other's tokens, with the same digit tokens and the same capitalized words, against every earlier record of the pool",
+    "restates_core": "no tail record restates a core record: on content tokens (rc.STOPWORDS left out), neither may cover 0.6 or more of the other's in both directions when the core record has at least 8 content tokens, so a long entry over a short record is kept and a same-length paraphrase is dropped",
+    "core_exact": "the core holds exactly 1000 records"
+  },
+  "statistics": {
+    "records": 10000,
+    "core": 1000,
+    "tail": 9000,
+    "by_kind": {
+      "all": {
+        "user": 4417,
+        "agent": 4023,
+        "entry": 1560
+      },
+      "core": {
+        "user": 507,
+        "agent": 336,
+        "entry": 157
+      },
+      "tail": {
+        "user": 3910,
+        "agent": 3687,
+        "entry": 1403
+      }
+    },
+    "entry_share": {
+      "all": 0.156,
+      "core": 0.157,
+      "tail": 0.1559,
+      "in_range": true,
+      "range": [
+        0.1,
+        0.2
+      ]
+    },
+    "by_persona": {
+      "p1": {
+        "records": 1250,
+        "core": 125,
+        "tail": 1125,
+        "user": 541,
+        "agent": 521,
+        "entry": 188,
+        "sessions": 133,
+        "active_days": 130,
+        "first_ts": "2025-09-12T19:40:00Z",
+        "last_ts": "2026-08-27T00:00:39Z"
+      },
+      "p2": {
+        "records": 1250,
+        "core": 125,
+        "tail": 1125,
+        "user": 549,
+        "agent": 494,
+        "entry": 207,
+        "sessions": 134,
+        "active_days": 121,
+        "first_ts": "2025-11-12T01:25:00Z",
+        "last_ts": "2026-09-06T15:49:45Z"
+      },
+      "p3": {
+        "records": 1250,
+        "core": 125,
+        "tail": 1125,
+        "user": 545,
+        "agent": 504,
+        "entry": 201,
+        "sessions": 136,
+        "active_days": 124,
+        "first_ts": "2025-09-04T18:10:21Z",
+        "last_ts": "2026-10-14T21:58:47Z"
+      },
+      "p4": {
+        "records": 1250,
+        "core": 125,
+        "tail": 1125,
+        "user": 562,
+        "agent": 499,
+        "entry": 189,
+        "sessions": 137,
+        "active_days": 127,
+        "first_ts": "2025-10-08T02:36:00Z",
+        "last_ts": "2026-09-28T11:46:14Z"
+      },
+      "p5": {
+        "records": 1250,
+        "core": 125,
+        "tail": 1125,
+        "user": 557,
+        "agent": 496,
+        "entry": 197,
+        "sessions": 141,
+        "active_days": 139,
+        "first_ts": "2025-06-02T22:30:00Z",
+        "last_ts": "2026-09-30T13:41:43Z"
+      },
+      "p6": {
+        "records": 1250,
+        "core": 125,
+        "tail": 1125,
+        "user": 556,
+        "agent": 508,
+        "entry": 186,
+        "sessions": 133,
+        "active_days": 128,
+        "first_ts": "2026-01-09T14:04:00Z",
+        "last_ts": "2026-10-04T10:55:44Z"
+      },
+      "p7": {
+        "records": 1250,
+        "core": 125,
+        "tail": 1125,
+        "user": 548,
+        "agent": 505,
+        "entry": 197,
+        "sessions": 133,
+        "active_days": 124,
+        "first_ts": "2025-08-27T16:20:00Z",
+        "last_ts": "2026-08-24T17:03:16Z"
+      },
+      "p8": {
+        "records": 1250,
+        "core": 125,
+        "tail": 1125,
+        "user": 559,
+        "agent": 496,
+        "entry": 195,
+        "sessions": 143,
+        "active_days": 131,
+        "first_ts": "2026-02-03T07:32:00Z",
+        "last_ts": "2026-08-31T05:19:09Z"
+      }
+    },
+    "words": {
+      "all": {
+        "n": 10000,
+        "min": 6,
+        "p5": 18,
+        "p25": 31,
+        "p50": 44,
+        "p75": 61,
+        "p95": 301,
+        "max": 494,
+        "mean": 74.4835
+      },
+      "user": {
+        "n": 4417,
+        "min": 6,
+        "p5": 15,
+        "p25": 23,
+        "p50": 31,
+        "p75": 41,
+        "p95": 54,
+        "max": 76,
+        "mean": 32.5273
+      },
+      "agent": {
+        "n": 4023,
+        "min": 8,
+        "p5": 28,
+        "p25": 40,
+        "p50": 50,
+        "p75": 59,
+        "p95": 73,
+        "max": 237,
+        "mean": 49.8484
+      },
+      "entry": {
+        "n": 1560,
+        "min": 100,
+        "p5": 129,
+        "p25": 195,
+        "p50": 259,
+        "p75": 316,
+        "p95": 377,
+        "max": 494,
+        "mean": 256.809
+      }
+    },
+    "characters": {
+      "n": 10000,
+      "min": 24,
+      "p5": 93,
+      "p25": 165,
+      "p50": 236,
+      "p75": 321,
+      "p95": 1643,
+      "max": 2890,
+      "mean": 403.2152
+    },
+    "sessions": {
+      "count": 1090,
+      "core": 99,
+      "tail": 991,
+      "records_per_session": {
+        "n": 1090,
+        "min": 1,
+        "p5": 6,
+        "p25": 7,
+        "p50": 9,
+        "p75": 11,
+        "p95": 13,
+        "max": 14,
+        "mean": 9.1743
+      }
+    },
+    "active_days": {
+      "count": 1024,
+      "records_per_active_day": {
+        "n": 1024,
+        "min": 1,
+        "p5": 6,
+        "p25": 7,
+        "p50": 9,
+        "p75": 11,
+        "p95": 17,
+        "max": 25,
+        "mean": 9.7656
+      },
+      "entries_per_active_day": {
+        "n": 1024,
+        "min": 0,
+        "p5": 1,
+        "p25": 1,
+        "p50": 1,
+        "p75": 2,
+        "p95": 3,
+        "max": 4,
+        "mean": 1.5234
+      },
+      "sessions_per_active_day": {
+        "n": 1024,
+        "min": 1,
+        "p5": 1,
+        "p25": 1,
+        "p50": 1,
+        "p75": 1,
+        "p95": 2,
+        "max": 2,
+        "mean": 1.0791
+      },
+      "day": "the UTC date of ts, per persona"
+    },
+    "records_by_month": {
+      "2025-06": 57,
+      "2025-07": 51,
+      "2025-08": 118,
+      "2025-09": 346,
+      "2025-10": 459,
+      "2025-11": 519,
+      "2025-12": 626,
+      "2026-01": 693,
+      "2026-02": 967,
+      "2026-03": 861,
+      "2026-04": 922,
+      "2026-05": 1005,
+      "2026-06": 934,
+      "2026-07": 926,
+      "2026-08": 934,
+      "2026-09": 498,
+      "2026-10": 84
+    },
+    "near_copy_clusters": 0,
+    "restatement_rate": {
+      "all": 0.0019,
+      "core_against_the_whole_pool": 0.001,
+      "core_against_the_core": 0.001,
+      "definition": "the share of records that restate an earlier record (earlier by ts): on content tokens (rc.STOPWORDS left out), each covers at least 0.6 of the other's (rc.token_overlap both ways), and the earlier record has at least 8 content tokens; the same rule as the restates_core screen"
+    },
+    "dropped": {
+      "total": 589,
+      "by_reason": {
+        "bad_record_shape": 0,
+        "not_unicode": 0,
+        "too_short": 7,
+        "entry_length": 23,
+        "secret_or_pii": 9,
+        "duplicate_id": 0,
+        "near_copy": 0,
+        "restates_core": 0,
+        "over_budget": 550
+      },
+      "by_phase": {
+        "core": 0,
+        "tail": 589
+      },
+      "rate_by_phase": {
+        "core": 0.0,
+        "tail": 0.0614
+      },
+      "rate": "dropped over returned (kept plus dropped)"
+    }
+  },
+  "tool": {
+    "file": "generate_pool.py",
+    "sha256": "8a919682ddd059d2140ca47c49428f1161d5b1b86e751b7be225ce6ac5549fce",
+    "harness_commit": "c770b2fef8757da327ac5734dda892ab5f330bb8",
+    "dirty": true
+  },
+  "provenance": "Written by claude-sonnet-5-5 from the persona files and prompts listed above, with seed 1; every model response is in the call log (generation/calls-*.jsonl, in order), the screens decided what was kept, and no record was edited by hand. Every person in it is invented.",
+  "generation": {
+    "call_log": [
+      "generation/calls-0001.jsonl",
+      "generation/calls-0002.jsonl"
+    ],
+    "call_log_part_bytes": 45000000,
+    "call_log_note": "read the parts in order; --replay and --resume take the folder"
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "id": "p6",
+  "name": "Kwabena Asante-Moreira",
+  "situation": "Kwabena is 39, a sales engineer for an industrial pump manufacturer, based in Rotterdam. He travels two or three weeks a month to plants and distributors across Europe, the Gulf and Southeast Asia, keeps up with three loyalty programs, and tries to protect weekends with his partner and their daughter.",
+  "domains": ["trip planning: flights, trains, hotels and visas", "loyalty programs, points and status", "customer visits, demos and expense reports", "staying healthy on the road", "home life in Rotterdam between trips"],
+  "agent_role": "His travel and logistics assistant: it builds itineraries, watches for changes and delays, tracks points and expenses, keeps visa and document dates, and remembers what he likes on the road.",
+  "voice": "Brisk, mixes English with the odd Dutch word, often written from an airport gate with typos.",
+  "agent_voice": "Efficient and calm: times always with time zones, offers one backup option, keeps it short.",
+  "people": [
+    {"name": "Liesbeth van Duren", "relation": "his partner"},
+    {"name": "Amara", "relation": "their daughter, age 6"},
+    {"name": "Jurgen Hoekstra", "relation": "his manager"},
+    {"name": "Farid Al-Mansouri", "relation": "distributor contact in Dubai"}
+  ],
+  "things": ["KLM Flying Blue", "Marriott Bonvoy", "NS trains", "Eurostar", "Rotterdam Centraal", "Schiphol", "Dubai", "Singapore Changi", "SAP Concur", "TripIt"],
+  "timeline": {"start": "2026-01-05", "months": 9},
+  "cadence": {
+    "description": "Any day, at odd hours across time zones; heaviest before and during trips, quiet on home weekends.",
+    "weekday_weights": [4, 3, 3, 3, 4, 1, 3],
+    "local_hours": [6, 23],
+    "utc_offset_hours": 1
+  },
+  "records_per_session": [6, 14],
+  "core_quotas": {"version_chains": 7, "preference_changes": 5, "corrections": 6, "threads": 5, "long_horizon_facts": 5, "shown_preferences": 5}
+}
