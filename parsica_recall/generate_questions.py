@@ -7,17 +7,23 @@ Takes any corpus.jsonl (an export of your own store, or the public pool) and wri
 frozen, linted question set with every prompt, seed and model response recorded:
 
     parsica-recall generate-questions --corpus export/corpus.jsonl --out ~/recall-sets/mystore-v1 \\
-        --seed 7 --targets 25 --max-cost 5 [--model claude-sonnet-5-5] [--store-ids]
+        --seed 7 --targets 25 --max-cost 5 [--provider openai] [--model MODEL] [--store-ids]
 
 Generation is the one step of the benchmark that uses a model. Everything else here is
 deterministic: the same corpus, seed, targets, prompts and model responses give the
 same files byte for byte, and --replay rebuilds a set from its generation/calls.jsonl
 without calling the API. A run that --max-cost stopped picks up from its own call log
-with --resume, and the calls it holds cost nothing the second time. By default the
-anthropic SDK reads the API key from ANTHROPIC_API_KEY and this file never reads it.
-With --api-key-env NAME this file reads that one variable, hands it to the SDK with the
-base URL pinned to api.anthropic.com, and takes it out of every error it reports. Either
-way it never prints, logs or writes the key.
+with --resume, and the calls it holds cost nothing the second time.
+
+The model is Claude through the Anthropic API (the default), an OpenAI model through
+OpenAI's API (--provider openai), a Gemini model through Google's Gemini API (--provider
+google), or any model behind an endpoint that speaks OpenAI's chat format (--provider
+openai --base-url URL). By default each provider's SDK reads its own key variable
+(ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY or GOOGLE_API_KEY) and this file never
+reads it. With --api-key-env NAME this file reads that one variable, hands it to the SDK
+with the provider's official endpoint pinned (or the --base-url endpoint), and takes it out
+of every error it reports. --base-url never sends OPENAI_API_KEY: an endpoint of your own
+gets a key only from --api-key-env. Either way it never prints, logs or writes the key.
 
 Exit status: 0 when the set was written and the oracle scored 100 on it (or --estimate
 printed, or --check-api said ok); 1 when the oracle check failed (the set is marked
@@ -38,6 +44,7 @@ import re
 import shutil
 import sys
 import unicodedata
+import urllib.parse
 from collections import Counter, defaultdict, deque
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tuple
@@ -67,16 +74,49 @@ SYSTEM_CACHE: Optional[Dict[str, str]] = {"type": "ephemeral", "ttl": "1h"}
 API_URL = "https://api.anthropic.com"  # with --api-key-env, every call goes here, whatever ANTHROPIC_BASE_URL says
 _ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
-# US dollars per million tokens: input, output, 5-minute cache write, 1-hour cache write,
-# cache read (Anthropic's first-party prices as of October 2026). One table for both
-# generators (generate_pool.py reads it from here). Used only for the estimate printed
-# before a run, the --max-cost guard and the cost a manifest reports; a model not listed
-# gets token counts alone.
+# The providers the question builder can call (the pool generator calls Anthropic only).
+# A model with no --model given is its provider's balanced model; an endpoint of your own
+# (--base-url) has no default model. OpenAI's and Google's calls always go to the official
+# endpoint below, whatever OPENAI_BASE_URL or GOOGLE_GEMINI_BASE_URL says; only --base-url
+# sends them anywhere else.
+PROVIDERS = ("anthropic", "openai", "google")
+DEFAULT_MODELS = {"anthropic": DEFAULT_MODEL, "openai": "gpt-6.2-sol", "google": "gemini-4-hydrogen"}
+OPENAI_URL = "https://api.openai.com/v1"
+GOOGLE_URL = "https://generativelanguage.googleapis.com/"
+# OpenAI's and Google's reasoning tokens count against the output cap, and OpenAI's
+# reasoning guide advises room for them; 32,000 also stays under the 32,768 tokens a
+# single Gemini call returns. EFFORT ("high") is sent as reasoning_effort to OpenAI and as
+# thinking_level to Google. An endpoint of your own gets neither unless --max-output-tokens
+# sets the cap, so a server that knows no such field is not refused.
+REASONING_MAX_TOKENS = 32000
+
+# US dollars per million tokens: input, output, cache write, long cache write, cache read.
+# One table for both generators (generate_pool.py reads it from here). Used only for the
+# estimate printed before a run, the --max-cost guard and the cost a manifest reports; a
+# model not listed gets token counts alone, unless --price-in and --price-out give its prices.
+# - Anthropic, first-party prices as of October 2026: the writes are the 5-minute and the
+#   1-hour cache (the question builder writes the 1-hour one).
+# - OpenAI, standard prices for prompts up to 272,000 tokens as of November 21, 2026: the
+#   write is the default 30-minute cache, at 1.25 times input (both write columns; the
+#   question builder never asks for the 12-hour one).
+# - Google, paid-tier prices as of November 21, 2026, with Gemini 4 Carbon and Argon at the
+#   prices they move to on December 1, 2026. Gemini caches implicitly with no write charge,
+#   so both write columns are the input price; thinking tokens are billed as output.
 PRICES = {
     "claude-sonnet-5-5": (2.00, 10.00, 2.50, 4.00, 0.20),
     "claude-opus-5-5": (4.00, 20.00, 5.00, 8.00, 0.20),
     "claude-fable-5-1": (10.00, 50.00, 12.50, 20.00, 0.25),
+    "gpt-6.2-astra": (8.00, 40.00, 10.00, 10.00, 0.40),
+    "gpt-6.2-sol": (2.00, 10.00, 2.50, 2.50, 0.10),
+    "gpt-6.1-terra": (1.00, 5.00, 1.25, 1.25, 0.05),
+    "gpt-6-luna": (0.10, 0.50, 0.125, 0.125, 0.01),
+    "gemini-4-carbon": (4.00, 20.00, 4.00, 4.00, 0.20),
+    "gemini-4-argon": (4.00, 20.00, 4.00, 4.00, 0.20),
+    "gemini-4-neon": (3.00, 15.00, 3.00, 3.00, 0.15),
+    "gemini-4-hydrogen": (1.50, 7.50, 1.50, 1.50, 0.075),
+    "gemini-3.5-flash-lite": (0.30, 2.50, 0.30, 0.30, 0.03),
 }
+PRICES_AS_OF = {"anthropic": "2026-10", "openai": "2026-11-21", "google": "2026-11-21"}
 # For --estimate only (docs/generation.md section 16). Characters per input token, measured
 # over pool v1's 1,090 recorded calls (2.36; the request is JSON lines like this one's).
 EST_CHARS_PER_TOKEN = 2.3
@@ -883,7 +923,38 @@ class Reply:
         self.cache_write = 0  # prompt-cache tokens, when the API reports them
         self.cache_write_1h = 0  # the part of cache_write written with the 1-hour cache
         self.cache_read = 0
+        # OpenAI and Google only: the part of output_tokens the model spent reasoning, as
+        # the API reports it. None for Anthropic, whose call records leave it out.
+        self.reasoning_tokens: Optional[int] = None
         self.in_log = False  # under --resume: the call is already in this folder's log
+
+
+def _check_env_name(name: Optional[str]) -> None:
+    """--api-key-env takes a variable's name, never a key."""
+    if name is not None and not _ENV_NAME.fullmatch(name):
+        raise GenerateError("--api-key-env takes the name of an environment variable, such as MY_API_KEY "
+                            "(letters, digits and underscores), never the key itself")
+
+
+def _key_from_env(name: str) -> str:
+    """The key in the one variable --api-key-env names, for every provider. Refused when
+    the variable is unset or empty, or holds a character no API key has, so no error can
+    ever quote the key escaped."""
+    key = os.environ.get(name, "").strip()
+    if not key:
+        raise GenerateError(f"--api-key-env: {name} is not set in this environment, or is empty")
+    if any(not 33 <= ord(c) <= 126 or c in "\"'\\" for c in key):  # so no error can quote it escaped
+        raise GenerateError(f"--api-key-env: {name} holds a space, a line break, a quote or another character "
+                            "an API key does not have; check its value in the environment's settings")
+    return key
+
+
+def _int(value: Any) -> int:
+    """A token count an SDK reports, or 0 when it reports none."""
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 class AnthropicModel:
@@ -900,9 +971,7 @@ class AnthropicModel:
     streamed call, so both generators handle the key with the same code."""
 
     def __init__(self, model_id: str, api_key_env: Optional[str] = None):
-        if api_key_env is not None and not _ENV_NAME.fullmatch(api_key_env):
-            raise GenerateError("--api-key-env takes the name of an environment variable, such as MY_API_KEY "
-                                "(letters, digits and underscores), never the key itself")
+        _check_env_name(api_key_env)
         self.model_id = model_id
         self.api_key_env = api_key_env
         self._client = None
@@ -932,13 +1001,7 @@ class AnthropicModel:
                                 "ANTHROPIC_API_KEY is set")
 
     def _connect_with_key(self) -> None:
-        name = self.api_key_env
-        key = os.environ.get(name, "").strip()
-        if not key:
-            raise GenerateError(f"--api-key-env: {name} is not set in this environment, or is empty")
-        if any(not 33 <= ord(c) <= 126 or c in "\"'\\" for c in key):  # so no error can quote it escaped
-            raise GenerateError(f"--api-key-env: {name} holds a space, a line break, a quote or another character "
-                                "an API key does not have; check its value in the environment's settings")
+        key = _key_from_env(self.api_key_env)
         try:
             import anthropic
         except ImportError:
@@ -1002,10 +1065,367 @@ class AnthropicModel:
         return resp.model
 
 
-def check_api(model_id: str = DEFAULT_MODEL, api_key_env: Optional[str] = None) -> str:
+def _provider_of(model_id: str) -> Optional[str]:
+    """The provider a model's name belongs to, when the name says so."""
+    if model_id.startswith("claude-"):
+        return "anthropic"
+    if model_id.startswith("gpt-") or re.match(r"o\d", model_id):
+        return "openai"
+    if model_id.startswith("gemini-"):
+        return "google"
+    return None
+
+
+def _check_base_url(url: str, with_key: bool) -> str:
+    """--base-url: an http or https URL with a host and nothing a log could leak (no user
+    name, password, query or fragment). A key goes over https only, or to this machine."""
+    text = url.strip()
+    parts = urllib.parse.urlsplit(text)
+    if parts.scheme not in ("http", "https") or not parts.hostname or any(c.isspace() for c in text):
+        raise GenerateError("--base-url takes an http:// or https:// URL, such as http://localhost:11434/v1")
+    if parts.username is not None or parts.password is not None:
+        raise GenerateError("--base-url must not hold a user name or password; give the endpoint's key with "
+                            "--api-key-env")
+    if parts.query or parts.fragment:
+        raise GenerateError("--base-url takes the endpoint's base URL alone, with no ? or # part")
+    local = parts.hostname in ("localhost", "127.0.0.1", "::1")
+    if with_key and parts.scheme == "http" and not local:
+        raise GenerateError("--base-url: a key goes to an endpoint over https only, unless the endpoint is on this "
+                            "machine (localhost)")
+    return text.rstrip("/")
+
+
+class ModelChoice:
+    """Which model writes the questions and where its calls go, checked once before
+    anything is written: the provider, the model, the endpoint, the variable the key is
+    read from, the output cap, the effort and the price.
+
+    Anthropic is the choice that shapes its requests, call log and manifest exactly as
+    before OpenAI and Google were added, so a set built before still replays byte for
+    byte; only the price flags add to its log and manifest. OpenAI and Google go to their
+    official endpoints with reasoning at EFFORT and REASONING_MAX_TOKENS, priced from
+    PRICES. An endpoint of your own (--base-url, provider openai) is sent neither field
+    unless --max-output-tokens sets the cap, and is priced only by --price-in and
+    --price-out."""
+
+    def __init__(self, provider: str = "anthropic", model_id: Optional[str] = None, base_url: Optional[str] = None,
+                 api_key_env: Optional[str] = None, price_in: Optional[float] = None,
+                 price_out: Optional[float] = None, max_output_tokens: Optional[int] = None):
+        if provider not in PROVIDERS:
+            raise GenerateError(f"--provider takes one of {', '.join(PROVIDERS)}, not {provider!r}")
+        _check_env_name(api_key_env)
+        if base_url is not None:
+            if provider != "openai":
+                raise GenerateError("--base-url goes with --provider openai: it names an endpoint that speaks "
+                                    "OpenAI's chat format")
+            base_url = _check_base_url(base_url, with_key=api_key_env is not None)
+            if not model_id:
+                raise GenerateError("--base-url needs --model, the name the endpoint knows the model by")
+        if max_output_tokens is not None:
+            if base_url is None:
+                raise GenerateError(f"--max-output-tokens goes with --base-url; the official endpoints get {MAX_TOKENS} "
+                                    f"(Anthropic) or {REASONING_MAX_TOKENS} (OpenAI and Google)")
+            if max_output_tokens < 1:
+                raise GenerateError("--max-output-tokens takes a whole number of tokens, 1 or more")
+        if (price_in is None) != (price_out is None):
+            raise GenerateError("--price-in and --price-out go together: the input and the output price, in US "
+                                "dollars per million tokens")
+        for flag, value in (("--price-in", price_in), ("--price-out", price_out)):
+            if value is not None and (not math.isfinite(value) or value < 0):
+                raise GenerateError(f"{flag} takes a number of US dollars per million tokens, 0 or more")
+        self.provider = provider
+        self.model_id = model_id or DEFAULT_MODELS[provider]
+        self.api_key_env = api_key_env
+        self.base_url = base_url
+        self.custom = base_url is not None
+        if not self.custom:
+            owner = _provider_of(self.model_id)
+            if owner is not None and owner != provider:
+                raise GenerateError(f"{self.model_id} is a model of {owner}'s; run it with --provider {owner}")
+        if provider == "anthropic":
+            self.endpoint, self.max_tokens, self.effort = None, MAX_TOKENS, EFFORT
+        elif self.custom:
+            self.endpoint, self.max_tokens, self.effort = base_url, max_output_tokens, None
+        else:
+            self.endpoint = OPENAI_URL if provider == "openai" else GOOGLE_URL
+            self.max_tokens, self.effort = REASONING_MAX_TOKENS, EFFORT
+        self.flag_price = price_in is not None
+        if self.flag_price:
+            self.price: Optional[Tuple[float, ...]] = (price_in, price_out, price_in, price_in, price_in)
+            self.price_source: Optional[str] = "--price-in and --price-out (cache reads and writes at the input price)"
+        elif self.custom:
+            self.price, self.price_source = None, None
+        else:
+            self.price = PRICES.get(self.model_id)
+            self.price_source = f"the price table as of {PRICES_AS_OF[provider]}" if self.price else None
+
+    @property
+    def other(self) -> bool:
+        """A provider other than Anthropic: its requests, run.json and manifest say which."""
+        return self.provider != "anthropic"
+
+    def fields(self) -> Dict[str, Any]:
+        """What a request hash, run.json, the call log and the manifest add for a provider
+        other than Anthropic."""
+        return {"provider": self.provider, "endpoint": self.endpoint, "effort": self.effort,
+                "max_tokens": self.max_tokens}
+
+    def priced_record(self) -> bool:
+        """Whether each call record carries the price it was counted at: when the flags set
+        it, and always for an endpoint of your own, which the table never prices."""
+        return self.flag_price or self.custom
+
+    def prices(self) -> Optional[Dict[str, Any]]:
+        """The prices a manifest reports the cost at, by name."""
+        if self.price is None:
+            return None
+        names = ("input", "output", "cache_write", "cache_write_long", "cache_read")
+        return {"usd_per_million_tokens": dict(zip(names, self.price)), "source": self.price_source}
+
+
+class OpenAIModel:
+    """Chat Completions through the official openai SDK, imported on the first call, for
+    OpenAI's API or an endpoint of your own that speaks the same format (--base-url). The
+    reply's shape is set by the prompt's JSON schema in strict mode. To OpenAI the request
+    also sends reasoning_effort, max_completion_tokens and store=false, so OpenAI keeps no
+    stored copy of the completion; an endpoint of your own is sent the schema and the
+    messages, and max_tokens only when --max-output-tokens sets it.
+
+    The key: for OpenAI's API the SDK reads OPENAI_API_KEY unless --api-key-env names
+    another variable, and the base URL is pinned to OPENAI_URL either way. An endpoint of
+    your own gets the key in the --api-key-env variable, or a placeholder, never
+    OPENAI_API_KEY. As with AnthropicModel, the key is never printed, logged or written,
+    and every error raised here has it taken out and drops the exception it came from."""
+
+    def __init__(self, choice: ModelChoice):
+        self.choice = choice
+        self.model_id = choice.model_id
+        self._client = None
+        self._key: Optional[str] = None
+
+    def connect(self) -> None:
+        if self._client is None:
+            self._connect()
+
+    def _connect(self) -> None:
+        try:
+            import openai
+        except ImportError:
+            raise GenerateError('a live run on OpenAI needs the openai package: pip install "parsica-recall[openai]" '
+                                "(the tests and --replay do not)")
+        self._openai = openai
+        self._sdk = f"openai {getattr(openai, '__version__', 'unknown')}"
+        c = self.choice
+        if c.api_key_env is not None:
+            self._key = _key_from_env(c.api_key_env)
+        kwargs: Dict[str, Any] = {"base_url": c.base_url or OPENAI_URL, "max_retries": 2}
+        if self._key is not None:
+            kwargs["api_key"] = self._key
+        elif c.custom:
+            kwargs["api_key"] = "none"  # an endpoint of your own is never sent OPENAI_API_KEY
+        try:
+            self._client = openai.OpenAI(**kwargs)
+        except Exception as exc:  # no OPENAI_API_KEY in the environment, most often
+            raise GenerateError(self._scrub(f"could not create the OpenAI client ({type(exc).__name__}: {exc}); check "
+                                            "that OPENAI_API_KEY is set, or name the key's variable with "
+                                            "--api-key-env")) from None
+
+    def _scrub(self, text: str) -> str:
+        return text.replace(self._key, "[the key]") if self._key else text
+
+    def request(self, category: str, prompt: Prompt, user: str) -> Dict[str, Any]:
+        """The keyword arguments of one Chat Completions call."""
+        c = self.choice
+        req: Dict[str, Any] = {
+            "model": c.model_id,
+            "messages": [{"role": "system", "content": prompt.text}, {"role": "user", "content": user}],
+            "response_format": {"type": "json_schema", "json_schema": {
+                "name": f"recall_{category}", "schema": prompt.schema, "strict": True}},
+        }
+        if c.custom:
+            if c.max_tokens is not None:
+                req["max_tokens"] = c.max_tokens
+        else:
+            req.update(reasoning_effort=c.effort, max_completion_tokens=c.max_tokens, store=False)
+        return req
+
+    def call(self, category: str, prompt: Prompt, user: str, request_sha: str) -> Reply:
+        if self._client is None:
+            self._connect()
+        started = _utc_now()
+        try:
+            resp = self._client.chat.completions.create(**self.request(category, prompt, user))
+        except TypeError as exc:  # an SDK too old for this request
+            raise GenerateError(self._scrub(f"the openai SDK refused the {category} request ({exc}); upgrade it with "
+                                            "pip install -U openai")) from None
+        except Exception as exc:  # an API error or anything else: a message, never a traceback that could hold the key
+            raise GenerateError(self._scrub(f"the {category} call failed: {type(exc).__name__}: {exc}")) from None
+        return self.reply(resp, started)
+
+    def reply(self, resp: Any, started: str) -> Reply:
+        """A Chat Completions response as calls.jsonl records it. OpenAI's prompt_tokens
+        holds the cached and the cache-written tokens; input_tokens here is the rest, as
+        Anthropic counts it. A refusal is recorded as the stop reason refusal."""
+        choices = getattr(resp, "choices", None) or []
+        first = choices[0] if choices else None
+        message = getattr(first, "message", None)
+        stop = "refusal" if getattr(message, "refusal", None) else getattr(first, "finish_reason", None)
+        usage = getattr(resp, "usage", None)
+        details = getattr(usage, "prompt_tokens_details", None)
+        read = _int(getattr(details, "cached_tokens", 0))
+        write = _int(getattr(details, "cache_write_tokens", 0))
+        reply = Reply(getattr(message, "content", None) or "", getattr(resp, "model", None) or self.model_id, stop,
+                      max(_int(getattr(usage, "prompt_tokens", 0)) - read - write, 0),
+                      _int(getattr(usage, "completion_tokens", 0)), _utc_now(), self._sdk, started)
+        reply.cache_write, reply.cache_read = write, read
+        reply.reasoning_tokens = _int(getattr(getattr(usage, "completion_tokens_details", None), "reasoning_tokens", 0))
+        return reply
+
+    def check(self) -> str:
+        """One tiny call that proves the key, the network and the model: the served model's
+        id, or GenerateError naming only the error's class."""
+        try:
+            self._connect()
+            req: Dict[str, Any] = {"model": self.model_id,
+                                   "messages": [{"role": "user", "content": "Reply with the word ok."}]}
+            if self.choice.custom:
+                req["max_tokens"] = 16
+            else:
+                req.update(max_completion_tokens=256, reasoning_effort="low", store=False)
+            resp = self._client.chat.completions.create(**req)
+        except GenerateError:
+            raise
+        except Exception as exc:  # the class only: an API error's text can quote the request
+            raise GenerateError(type(exc).__name__) from None
+        return getattr(resp, "model", None) or self.model_id
+
+
+def _enum_text(value: Any) -> Optional[str]:
+    """An SDK enum (or plain string) as its text: FinishReason.STOP is STOP."""
+    if value is None:
+        return None
+    return str(getattr(value, "value", value))
+
+
+class GoogleModel:
+    """generateContent through Google's official google-genai SDK, imported on the first
+    call, on the Gemini Developer API (never Vertex AI). The reply's shape is set by the
+    prompt's JSON schema (response_json_schema), the thinking by thinking_level at EFFORT,
+    and the SDK's automatic continuation is off, so a call is one request and its tokens
+    are the ones it reports.
+
+    The key: the SDK reads GOOGLE_API_KEY or GEMINI_API_KEY (GOOGLE_API_KEY first) unless
+    --api-key-env names another variable, and the base URL is pinned to GOOGLE_URL either
+    way, whatever GOOGLE_GEMINI_BASE_URL says. As with AnthropicModel, the key is never
+    printed, logged or written, and every error raised here has it taken out."""
+
+    def __init__(self, choice: ModelChoice):
+        self.choice = choice
+        self.model_id = choice.model_id
+        self._client = None
+        self._key: Optional[str] = None
+
+    def connect(self) -> None:
+        if self._client is None:
+            self._connect()
+
+    def _connect(self) -> None:
+        try:
+            from google import genai
+        except ImportError:
+            raise GenerateError('a live run on Google needs the google-genai package: pip install '
+                                '"parsica-recall[google]" (the tests and --replay do not)')
+        self._sdk = f"google-genai {getattr(genai, '__version__', 'unknown')}"
+        if self.choice.api_key_env is not None:
+            self._key = _key_from_env(self.choice.api_key_env)
+        kwargs: Dict[str, Any] = {"vertexai": False,
+                                  "http_options": {"base_url": GOOGLE_URL, "retry_options": {"attempts": 3}}}
+        if self._key is not None:
+            kwargs["api_key"] = self._key
+        try:
+            self._client = genai.Client(**kwargs)
+        except Exception as exc:  # no GEMINI_API_KEY or GOOGLE_API_KEY in the environment, most often
+            raise GenerateError(self._scrub(f"could not create the Google client ({type(exc).__name__}: {exc}); check "
+                                            "that GEMINI_API_KEY or GOOGLE_API_KEY is set, or name the key's variable "
+                                            "with --api-key-env")) from None
+
+    def _scrub(self, text: str) -> str:
+        return text.replace(self._key, "[the key]") if self._key else text
+
+    def config(self, prompt: Prompt) -> Dict[str, Any]:
+        """The generateContent config of one call."""
+        return {"system_instruction": prompt.text, "response_mime_type": "application/json",
+                "response_json_schema": prompt.schema, "max_output_tokens": self.choice.max_tokens,
+                "thinking_config": {"thinking_level": self.choice.effort.upper()},
+                "automatic_continuation": False}
+
+    def call(self, category: str, prompt: Prompt, user: str, request_sha: str) -> Reply:
+        if self._client is None:
+            self._connect()
+        started = _utc_now()
+        try:
+            resp = self._client.models.generate_content(model=self.model_id, contents=user, config=self.config(prompt))
+        except TypeError as exc:  # an SDK too old for this request
+            raise GenerateError(self._scrub(f"the google-genai SDK refused the {category} request ({exc}); upgrade it "
+                                            "with pip install -U google-genai")) from None
+        except Exception as exc:  # an API error or anything else: a message, never a traceback that could hold the key
+            raise GenerateError(self._scrub(f"the {category} call failed: {type(exc).__name__}: {exc}")) from None
+        return self.reply(resp, started)
+
+    def reply(self, resp: Any, started: str) -> Reply:
+        """A generateContent response as calls.jsonl records it: the text parts without the
+        thought parts; a prompt Google blocked as the stop reason PROMPT_BLOCKED_<reason>.
+        Google's prompt_token_count holds the cached tokens, and the thinking tokens are
+        billed as output, so output_tokens is the reply's tokens plus the thoughts."""
+        candidates = getattr(resp, "candidates", None) or []
+        first = candidates[0] if candidates else None
+        blocked = _enum_text(getattr(getattr(resp, "prompt_feedback", None), "block_reason", None))
+        if first is None and blocked:
+            stop, text = f"PROMPT_BLOCKED_{blocked}", ""
+        else:
+            stop = _enum_text(getattr(first, "finish_reason", None))
+            parts = getattr(getattr(first, "content", None), "parts", None) or []
+            text = "".join(p.text for p in parts if getattr(p, "text", None) and not getattr(p, "thought", False))
+        usage = getattr(resp, "usage_metadata", None)
+        read = _int(getattr(usage, "cached_content_token_count", 0))
+        thoughts = _int(getattr(usage, "thoughts_token_count", 0))
+        reply = Reply(text, getattr(resp, "model_version", None) or self.model_id, stop,
+                      max(_int(getattr(usage, "prompt_token_count", 0)) - read, 0),
+                      _int(getattr(usage, "candidates_token_count", 0)) + thoughts, _utc_now(), self._sdk, started)
+        reply.cache_read = read
+        reply.reasoning_tokens = thoughts
+        return reply
+
+    def check(self) -> str:
+        """One tiny call that proves the key, the network and the model: the served model's
+        id, or GenerateError naming only the error's class."""
+        try:
+            self._connect()
+            resp = self._client.models.generate_content(
+                model=self.model_id, contents="Reply with the word ok.",
+                config={"max_output_tokens": 256, "thinking_config": {"thinking_level": "LOW"},
+                        "automatic_continuation": False})
+        except GenerateError:
+            raise
+        except Exception as exc:  # the class only: an API error's text can quote the request
+            raise GenerateError(type(exc).__name__) from None
+        return getattr(resp, "model_version", None) or self.model_id
+
+
+def make_model(choice: ModelChoice) -> Any:
+    """The live model for a choice: the Anthropic, OpenAI or Google adapter."""
+    if choice.provider == "openai":
+        return OpenAIModel(choice)
+    if choice.provider == "google":
+        return GoogleModel(choice)
+    return AnthropicModel(choice.model_id, choice.api_key_env)
+
+
+def check_api(model_id: str = DEFAULT_MODEL, api_key_env: Optional[str] = None,
+              choice: Optional[ModelChoice] = None) -> str:
     """--check-api: one tiny call. Returns the served model's id; raises GenerateError
     with only the error's class name, never its text and never the key."""
-    return AnthropicModel(model_id, api_key_env).check()
+    return make_model(choice or ModelChoice("anthropic", model_id, api_key_env=api_key_env)).check()
 
 
 class ReplayModel:
@@ -1058,27 +1478,34 @@ class ReplayModel:
             if self.live is not None:
                 return self.live.call(category, prompt, user, request_sha)
             raise GenerateError(f"--replay: {self.path} holds no response for this {category} request; the corpus, "
-                                "seed, targets, window, model or prompts differ from the recorded run")
+                                "seed, targets, window, provider, model or prompts differ from the recorded run")
         rec = queue.popleft()
         reply = Reply(rec["response"], rec["served_model"], rec["stop_reason"], rec["input_tokens"],
                       rec["output_tokens"], rec["time"], rec.get("sdk"), rec.get("started"))
         reply.cache_write = rec.get("cache_creation_input_tokens", 0)
         reply.cache_write_1h = rec.get("cache_creation_1h_input_tokens", 0)
         reply.cache_read = rec.get("cache_read_input_tokens", 0)
+        reply.reasoning_tokens = rec.get("reasoning_tokens")  # OpenAI's and Google's records only
         reply.in_log = self.live is not None
         return reply
+
+
+def cost_at(price: Optional[Sequence[float]], uncached_in: int, out: int, cache_write: int = 0, cache_read: int = 0,
+            cache_write_1h: int = 0) -> Optional[float]:
+    """US dollars at one price row (input, output, cache write, long cache write, cache
+    read, per million tokens), unrounded; None with no price."""
+    if price is None:
+        return None
+    p_in, p_out, p_write, p_write_1h, p_read = price
+    return (uncached_in * p_in + out * p_out + cache_write * p_write + cache_write_1h * p_write_1h
+            + cache_read * p_read) / 1e6
 
 
 def cost_exact(model_id: str, uncached_in: int, out: int, cache_write: int = 0, cache_read: int = 0,
                cache_write_1h: int = 0) -> Optional[float]:
     """US dollars at the prices in PRICES, unrounded; None for a model not listed.
     cache_write is written with the 5-minute cache, cache_write_1h with the 1-hour cache."""
-    price = PRICES.get(model_id)
-    if price is None:
-        return None
-    p_in, p_out, p_write, p_write_1h, p_read = price
-    return (uncached_in * p_in + out * p_out + cache_write * p_write + cache_write_1h * p_write_1h
-            + cache_read * p_read) / 1e6
+    return cost_at(PRICES.get(model_id), uncached_in, out, cache_write, cache_read, cache_write_1h)
 
 
 def cost_usd(model_id: str, uncached_in: int, out: int, cache_write: int, cache_read: int) -> Optional[float]:
@@ -1088,12 +1515,14 @@ def cost_usd(model_id: str, uncached_in: int, out: int, cache_write: int, cache_
 
 
 def record_cost(rec: Dict[str, Any]) -> Optional[float]:
-    """The cost of one recorded call, at the price of the model it asked for. Its cache
-    writes are 1-hour ones as far as cache_creation_1h_input_tokens says, 5-minute ones for
-    the rest."""
+    """The cost of one recorded call, at the price the record carries (price_usd_per_million,
+    set by --price-in and --price-out or held empty for an endpoint of your own), else at
+    the table's price for the model it asked for. Its cache writes are 1-hour ones as far
+    as cache_creation_1h_input_tokens says, the default ones for the rest."""
     hour = rec.get("cache_creation_1h_input_tokens", 0)
-    return cost_exact(rec.get("model"), rec.get("input_tokens", 0), rec.get("output_tokens", 0),
-                      rec.get("cache_creation_input_tokens", 0) - hour, rec.get("cache_read_input_tokens", 0), hour)
+    price = rec["price_usd_per_million"] if "price_usd_per_million" in rec else PRICES.get(rec.get("model"))
+    return cost_at(price, rec.get("input_tokens", 0), rec.get("output_tokens", 0),
+                   rec.get("cache_creation_input_tokens", 0) - hour, rec.get("cache_read_input_tokens", 0), hour)
 
 
 def system_blocks(prompt: Prompt) -> Any:
@@ -1104,10 +1533,16 @@ def system_blocks(prompt: Prompt) -> Any:
     return [{"type": "text", "text": prompt.text, "cache_control": dict(SYSTEM_CACHE)}]
 
 
-def request_sha256(model_id: str, prompt: Prompt, user: str) -> str:
-    blob = json.dumps({"model": model_id, "max_tokens": MAX_TOKENS, "effort": EFFORT,
-                       "system_sha256": prompt.sha256, "system_cache": SYSTEM_CACHE, "user": user},
-                      sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+def request_sha256(model_id: str, prompt: Prompt, user: str, choice: Optional[ModelChoice] = None) -> str:
+    """The hash a call log keys each response by, so --replay and --resume find it again.
+    An Anthropic request hashes as it always has; another provider's request adds the
+    provider and the endpoint, and its own cap and effort in place of Anthropic's."""
+    if choice is not None and choice.other:
+        fields: Dict[str, Any] = {"model": model_id, "system_sha256": prompt.sha256, "user": user, **choice.fields()}
+    else:
+        fields = {"model": model_id, "max_tokens": MAX_TOKENS, "effort": EFFORT,
+                  "system_sha256": prompt.sha256, "system_cache": SYSTEM_CACHE, "user": user}
+    blob = json.dumps(fields, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     return "sha256:" + hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
@@ -1188,10 +1623,19 @@ def parse_user_message(text: str) -> List[Any]:
     return [json.loads(line) for line in lines if line.strip()]
 
 
+# The stop reasons that mean the model declined or was stopped by a filter, and those that
+# mean the reply ran out of room, in each provider's words (Anthropic, OpenAI, Google). The
+# call log keeps the provider's own word; parse_reply reads it through these.
+DECLINED_STOPS = {"refusal", "content_filter", "SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII",
+                  "LANGUAGE", "IMAGE_SAFETY", "MODEL_ARMOR"}
+CUT_STOPS = {"max_tokens", "length", "MAX_TOKENS", "CONTINUATION"}
+
+
 def parse_reply(reply: Reply) -> Tuple[List[Any], Optional[str]]:
-    if reply.stop_reason == "refusal":
+    stop = reply.stop_reason or ""
+    if stop in DECLINED_STOPS or stop.startswith("PROMPT_BLOCKED_"):
         return [], "the model declined the request"
-    if reply.stop_reason == "max_tokens":
+    if stop in CUT_STOPS:
         return [], "the reply hit max_tokens"
     try:
         data = json.loads(reply.text)
@@ -1640,14 +2084,19 @@ def split_halves(frozen: List[Dict[str, Any]], split_seed: int) -> Dict[int, str
 
 def _settings(**k: Any) -> Dict[str, Any]:
     """What generation/run.json records and a --resume checks: everything that shapes the
-    requests and the freeze. --max-cost and --api-key-env are not in it, so a resume may
-    raise the one and name another variable for the other."""
-    return {"set": k["qset_version"], "sealed_set": k["sealed_name"], "corpus_sha256": k["corpus_sha"],
-            "seed": k["seed"], "targets": {c: k["targets"].get(c, 0) for c in rc.CATEGORIES}, "model": k["model_id"],
-            "store_ids": k["store_ids"], "gold_window": k["window"], "core": k["core"], "core_quota": k["core_quota"],
-            "unit_caps": dict(sorted(k["unit_caps"].items())), "planted_pairs": k["planted_sha"],
-            "split_seed": k["split_seed"], "lint_spec": k["spec"].get("spec_version"),
-            "prompts": {c: p.sha256 for c, p in k["prompts"].items()}}
+    requests and the freeze. --max-cost, --api-key-env and the price flags are not in it, so
+    a resume may raise the one, name another variable or price the model again. A provider
+    other than Anthropic adds itself, its endpoint, its effort and its output cap."""
+    out = {"set": k["qset_version"], "sealed_set": k["sealed_name"], "corpus_sha256": k["corpus_sha"],
+           "seed": k["seed"], "targets": {c: k["targets"].get(c, 0) for c in rc.CATEGORIES}, "model": k["model_id"],
+           "store_ids": k["store_ids"], "gold_window": k["window"], "core": k["core"], "core_quota": k["core_quota"],
+           "unit_caps": dict(sorted(k["unit_caps"].items())), "planted_pairs": k["planted_sha"],
+           "split_seed": k["split_seed"], "lint_spec": k["spec"].get("spec_version"),
+           "prompts": {c: p.sha256 for c, p in k["prompts"].items()}}
+    choice = k.get("choice")
+    if choice is not None and choice.other:
+        out.update(choice.fields())
+    return out
 
 
 def generate_set(corpus_path: str, out: str, seed: int, targets: Dict[str, int], model_id: str = DEFAULT_MODEL,
@@ -1656,11 +2105,14 @@ def generate_set(corpus_path: str, out: str, seed: int, targets: Dict[str, int],
                  gold_window: Optional[int] = None, core: Optional[int] = None, split_seed: Optional[int] = None,
                  sealed_out: Optional[str] = None, api_key_env: Optional[str] = None, estimate_only: bool = False,
                  estimate_from: Optional[Any] = None, core_quota: Optional[int] = None,
-                 planted_pairs: Optional[str] = None, unit_caps: Optional[Dict[str, int]] = None) -> Dict[str, Any]:
-    """Generate, lint and freeze one question set into out (docs/generation.md). model is
-    anything with call(category, prompt, user, request_sha) -> Reply; by default the API
-    (with the key from api_key_env when given), the recorded responses when replay names a
-    calls.jsonl, or both under resume. max_cost stops the run before its next new call once
+                 planted_pairs: Optional[str] = None, unit_caps: Optional[Dict[str, int]] = None,
+                 choice: Optional[ModelChoice] = None) -> Dict[str, Any]:
+    """Generate, lint and freeze one question set into out (docs/generation.md). choice is
+    the provider, model, endpoint and price (ModelChoice; by default Anthropic with
+    model_id and api_key_env). model is anything with call(category, prompt, user,
+    request_sha) -> Reply; by default the choice's API (with the key from api_key_env when
+    given), the recorded responses when replay names a calls.jsonl, or both under resume.
+    max_cost stops the run before its next new call once
     the set's cost passes it (CostStop). gold_window limits gold to the corpus's first
     records, core puts the corpus's first core records first (core_quota: at most that
     many items per category from the core, then the rest of the window), and split_seed with
@@ -1671,6 +2123,9 @@ def generate_set(corpus_path: str, out: str, seed: int, targets: Dict[str, int],
     any call; estimate_from is a finished set's folder, or a list of them, that measured
     its yields and tokens."""
     say = (lambda *a, **k: None) if quiet else print
+    if choice is None:
+        choice = ModelChoice("anthropic", model_id, api_key_env=api_key_env)
+    model_id = choice.model_id
     split = split_seed is not None
     if split != (sealed_out is not None):
         raise GenerateError("--split-seed and --sealed-out go together: the split needs a folder for its sealed half")
@@ -1679,8 +2134,13 @@ def generate_set(corpus_path: str, out: str, seed: int, targets: Dict[str, int],
                             "give one of them")
     if max_cost is not None and (not math.isfinite(max_cost) or max_cost < 0):
         raise GenerateError("--max-cost takes a number of US dollars, 0 or more")
-    if max_cost is not None and model_id not in PRICES:
-        raise GenerateError(f"--max-cost: no price on file for {model_id} (PRICES), so the guard cannot count its cost")
+    if max_cost is not None and choice.price is None:
+        if choice.custom:
+            raise GenerateError("--max-cost: an endpoint of your own (--base-url) has no price on file, so the guard "
+                                "cannot count its cost; give its prices with --price-in and --price-out (0 and 0 for "
+                                "a model that costs nothing to run)")
+        raise GenerateError(f"--max-cost: no price on file for {model_id} (PRICES), so the guard cannot count its cost; "
+                            "give its prices with --price-in and --price-out")
     out_dir, qset_version = check_out(out, release, resume=resume and not split)
     sealed_dir = sealed_name = None
     if split:
@@ -1746,7 +2206,7 @@ def generate_set(corpus_path: str, out: str, seed: int, targets: Dict[str, int],
     settings = _settings(qset_version=qset_version, sealed_name=sealed_name, corpus_sha=corpus_sha, seed=seed,
                          targets=targets, model_id=model_id, store_ids=store_ids, window=window, core=core,
                          core_quota=core_quota, split_seed=split_seed, spec=spec, prompts=prompts,
-                         unit_caps=unit_caps, planted_sha=planted_sha)
+                         unit_caps=unit_caps, planted_sha=planted_sha, choice=choice)
     say(f"Corpus {os.path.basename(corpus_path)}: {corpus.N} records, {len(reps)} eligible memories "
         f"({eligible_records} records with their near copies)"
         + (f" in the gold window of {window}" if window < corpus.N else "")
@@ -1773,7 +2233,8 @@ def generate_set(corpus_path: str, out: str, seed: int, targets: Dict[str, int],
         recorded = ReplayModel(calls_path, tolerate_cut=True) if resume else None
         folders = [estimate_from] if isinstance(estimate_from, str) else list(estimate_from or [])
         calibration = read_calibrations(folders) if folders else None
-        est = estimate(plans, targets, corpus, prompts, model_id, recorded, calibration, core_quota, sample_cap)
+        est = estimate(plans, targets, corpus, prompts, model_id, recorded, calibration, core_quota, sample_cap,
+                       choice=choice)
         print_estimate(est, say)
         return {"estimate": est, "out": out_dir, "qset_version": qset_version}
 
@@ -1781,7 +2242,7 @@ def generate_set(corpus_path: str, out: str, seed: int, targets: Dict[str, int],
         if replay:
             model = ReplayModel(replay)
         else:
-            model = AnthropicModel(model_id, api_key_env)
+            model = make_model(choice)
     if resume:
         model = ReplayModel(calls_path, live=model)
         if model.skipped_lines:  # the line a stopped run was cut off writing, taken out before any new call
@@ -1806,7 +2267,7 @@ def generate_set(corpus_path: str, out: str, seed: int, targets: Dict[str, int],
 
     def do_call(cat: str, prompt: Prompt, user: str, units: Sequence[Tuple[str, ...]], retry_of: Optional[int]):
         nonlocal out_ready
-        req = request_sha256(model_id, prompt, user)
+        req = request_sha256(model_id, prompt, user, choice)
         free = hasattr(model, "holds") and model.holds(req)
         if max_cost is not None and spent[0] > max_cost and not free:
             new = sum(1 for c in calls if c["new"])
@@ -1829,12 +2290,21 @@ def generate_set(corpus_path: str, out: str, seed: int, targets: Dict[str, int],
             _dump(run_path, settings)
             open(calls_path, "w", encoding="utf-8", newline="\n").close()
             out_ready = True
+        # An Anthropic call at the table's price is recorded exactly as before; another
+        # provider adds itself and its endpoint, a reasoning model its reasoning tokens, and
+        # a price from the flags (or an endpoint of your own) the price it was counted at.
+        provider = {"provider": choice.provider, "endpoint": choice.endpoint} if choice.other else {}
+        reasoning = {} if reply.reasoning_tokens is None else {"reasoning_tokens": reply.reasoning_tokens}
+        priced_at = ({"price_usd_per_million": list(choice.price) if choice.price else None}
+                     if choice.priced_record() else {})
         call = {"n": len(calls) + 1, "category": cat, "retry_of": retry_of, "units": [list(u) for u in units],
-                "request_sha256": req, "model": model_id, "served_model": reply.model, "stop_reason": reply.stop_reason,
-                "input_tokens": reply.input_tokens, "output_tokens": reply.output_tokens,
+                "request_sha256": req, "model": model_id, **provider, "served_model": reply.model,
+                "stop_reason": reply.stop_reason, "input_tokens": reply.input_tokens,
+                "output_tokens": reply.output_tokens, **reasoning,
                 "cache_creation_input_tokens": reply.cache_write,
                 "cache_creation_1h_input_tokens": reply.cache_write_1h, "cache_read_input_tokens": reply.cache_read,
-                "started": reply.started, "time": reply.time, "sdk": reply.sdk, "user": user, "response": reply.text}
+                **priced_at, "started": reply.started, "time": reply.time, "sdk": reply.sdk, "user": user,
+                "response": reply.text}
         line = json.dumps(call, ensure_ascii=False)
         if not reply.in_log:
             with open(calls_path, "a", encoding="utf-8", newline="\n") as f:
@@ -2059,7 +2529,7 @@ def generate_set(corpus_path: str, out: str, seed: int, targets: Dict[str, int],
                         "categories": sample})
     _write_jsonl(cands_path, [_public(c) for c in candidates])
 
-    common = dict(store_ids=store_ids, corpus=corpus, targets=targets, model_id=model_id, calls=calls,
+    common = dict(store_ids=store_ids, corpus=corpus, targets=targets, model_id=model_id, choice=choice, calls=calls,
                   prompts=prompts, seed=seed, shown=shown, reps=reps, why=why, bands=bands,
                   eligible_records=eligible_records, sample_cap=sample_cap, sample_path=sample_path,
                   states=states, calls_path=calls_path, cands_path=cands_path, run_path=run_path, spec=spec,
@@ -2090,7 +2560,7 @@ def generate_set(corpus_path: str, out: str, seed: int, targets: Dict[str, int],
             "report": written[main_half]["report"], "questions": written[main_half]["questions"],
             "candidates": candidates, "halves": written if split else None, "checks": checks,
             "sealed_out": sealed_dir,
-            "cost_usd": round(math.fsum(record_cost(c) or 0.0 for c in calls), 2) if model_id in PRICES else None}
+            "cost_usd": round(math.fsum(record_cost(c) or 0.0 for c in calls), 2) if choice.price is not None else None}
 
 
 def _public(cand: Dict[str, Any]) -> Dict[str, Any]:
@@ -2147,7 +2617,8 @@ def _manifest(**k: Any) -> Dict[str, Any]:
         per_category[cat] = row
     by_cat = Counter(q["category"] for q in questions)
     total = math.fsum(record_cost(c) or 0.0 for c in calls)
-    priced = k["model_id"] in PRICES
+    choice = k.get("choice")
+    priced = choice.price is not None if choice is not None else k["model_id"] in PRICES
     cost_of = lambda f: sum(c[f] for c in calls)  # noqa: E731
     sampler = {
         "seed": k["seed"], "sample_size": len(k["shown"]), "pool": corpus.N,
@@ -2244,19 +2715,32 @@ def _manifest(**k: Any) -> Dict[str, Any]:
             "by_category": dict(sorted(Counter(q["category"] for q in questions if q["id"] in in_core).items())),
             "ids": ids,
         }
+    model_info: Dict[str, Any] = {
+        "requested": k["model_id"], "served": served, "effort": EFFORT, "max_tokens": MAX_TOKENS,
+        "system_cache": SYSTEM_CACHE,
+        "server_side_fallbacks": False, "sdk": next((c["sdk"] for c in calls if c["sdk"]), None),
+        "started": calls[0]["started"] if calls else None, "finished": calls[-1]["time"] if calls else None,
+        "calls": len(calls), "retry_calls": sum(1 for c in calls if c.get("retry_of") is not None),
+        "input_tokens": cost_of("input_tokens"), "output_tokens": cost_of("output_tokens"),
+        "cache_creation_input_tokens": cost_of("cache_creation_input_tokens"),
+        "cache_creation_1h_input_tokens": sum(c.get("cache_creation_1h_input_tokens", 0) for c in calls),
+        "cache_read_input_tokens": cost_of("cache_read_input_tokens"),
+        "cost_usd": round(total, 2) if priced else None,
+        "cost_note": "from the call log's token counts at the prices in PRICES; the bill is the authority"}
+    if choice is not None and choice.other:
+        # Another provider's own cap and effort, its endpoint, and no Anthropic cache marking
+        # (OpenAI and Google cache on their own; the tokens they read from it are counted).
+        model_info = {"provider": choice.provider, "endpoint": choice.endpoint, **model_info,
+                      "effort": choice.effort, "max_tokens": choice.max_tokens, "system_cache": None,
+                      "server_side_fallbacks": None,
+                      "reasoning_tokens": sum(c.get("reasoning_tokens", 0) for c in calls)}
+    if choice is not None and (choice.other or choice.flag_price):
+        model_info["prices"] = choice.prices()
+        model_info["cost_note"] = (f"from the call log's token counts at {choice.price_source}; the bill is the "
+                                   "authority" if choice.price_source else "no price on file: token counts only")
     m.update({
         "targets": {c: k["targets"].get(c, 0) for c in rc.CATEGORIES},
-        "model": {"requested": k["model_id"], "served": served, "effort": EFFORT, "max_tokens": MAX_TOKENS,
-                  "system_cache": SYSTEM_CACHE,
-                  "server_side_fallbacks": False, "sdk": next((c["sdk"] for c in calls if c["sdk"]), None),
-                  "started": calls[0]["started"] if calls else None, "finished": calls[-1]["time"] if calls else None,
-                  "calls": len(calls), "retry_calls": sum(1 for c in calls if c.get("retry_of") is not None),
-                  "input_tokens": cost_of("input_tokens"), "output_tokens": cost_of("output_tokens"),
-                  "cache_creation_input_tokens": cost_of("cache_creation_input_tokens"),
-                  "cache_creation_1h_input_tokens": sum(c.get("cache_creation_1h_input_tokens", 0) for c in calls),
-                  "cache_read_input_tokens": cost_of("cache_read_input_tokens"),
-                  "cost_usd": round(total, 2) if priced else None,
-                  "cost_note": "from the call log's token counts at the prices in PRICES; the bill is the authority"},
+        "model": model_info,
         "prompts": {c: {"file": f"prompts/{c}.md", "sha256": p.sha256} for c, p in k["prompts"].items()},
         "sampler": sampler,
         "generation": generation,
@@ -2393,11 +2877,14 @@ def read_calibrations(folders: Sequence[str]) -> Dict[str, Any]:
 
 def estimate(plans: Dict[str, Plan], targets: Dict[str, int], corpus: Corpus, prompts: Dict[str, Prompt],
              model_id: str, recorded: Optional[ReplayModel] = None, calibration: Optional[Dict[str, Any]] = None,
-             core_quota: Optional[int] = None, sample_cap: Optional[int] = None) -> Dict[str, Any]:
+             core_quota: Optional[int] = None, sample_cap: Optional[int] = None,
+             choice: Optional[ModelChoice] = None) -> Dict[str, Any]:
     """The questions, calls, tokens and cost a run is likely to come to, before any call
     (section 16). Input tokens come from the planned messages themselves, with each
     category's system prompt written to the cache on its first call and read from it after
-    (SYSTEM_CACHE). Yields, output tokens and retries are the EST_* figures, or what a
+    (SYSTEM_CACHE); for OpenAI and Google, which cache on their own terms, every prompt is
+    counted uncached, which can only overstate. The price is the choice's (the table's, the
+    flags', or none). Yields, output tokens and retries are the EST_* figures, or what a
     finished pilot measured (calibration), stage by stage. Expected: each category walks its
     core stage until the core quota, its target or the core's units, then the rest of the
     window until its target or the unit cap, at each stage's yield; a category the cap
@@ -2405,6 +2892,8 @@ def estimate(plans: Dict[str, Plan], targets: Dict[str, int], corpus: Corpus, pr
     at the same tokens and retries per call."""
     cal = (calibration or {}).get("categories", {})
     ratio = (calibration or {}).get("chars_per_token") or EST_CHARS_PER_TOKEN
+    price = choice.price if choice is not None else PRICES.get(model_id)
+    cache = None if choice is not None and choice.other else SYSTEM_CACHE
     rows = {}
     shown_expected: set = set()  # the distinct records the planned units would show, against the sample cap
     shown_worst: set = set()
@@ -2476,15 +2965,15 @@ def estimate(plans: Dict[str, Plan], targets: Dict[str, int], corpus: Corpus, pr
                 calls, retries = calls + len(chunks), retries + more
             system = len(prompts[cat].text) / ratio
             sent = calls + retries
-            if SYSTEM_CACHE is not None and sent:
+            if cache is not None and sent:
                 uncached, write, read = user_chars / ratio, system, system * (sent - 1)
             else:
                 uncached, write, read = user_chars / ratio + system * sent, 0.0, 0.0
-            hour = write if (SYSTEM_CACHE or {}).get("ttl") == "1h" else 0.0
+            hour = write if (cache or {}).get("ttl") == "1h" else 0.0
             return {"calls": calls, "retries": retries, "input_tokens": int(uncached), "cache_write_tokens": int(write),
                     "cache_read_tokens": int(read), "output_tokens": int(out_tokens),
-                    "cost_usd": cost_exact(model_id, int(uncached), int(out_tokens), int(write - hour), int(read),
-                                           int(hour))}
+                    "cost_usd": cost_at(price, int(uncached), int(out_tokens), int(write - hour), int(read),
+                                        int(hour))}
 
         frozen = math.fsum(f for _, f in expected.values())
         spend, most = cost({s: u for s, (u, _) in expected.items()}), cost(worst)
@@ -2517,9 +3006,14 @@ def estimate(plans: Dict[str, Plan], targets: Dict[str, int], corpus: Corpus, pr
            "short": [cat for cat, row in rows.items() if row["short"]],
            "thin": [(cat, stage, s["units_measured"], s["publishable_measured"]) for cat, row in rows.items()
                     for stage, s in row["stages"].items() if s["thin"]],
-           "cached": None if SYSTEM_CACHE is None else SYSTEM_CACHE.get("ttl", "5m"), "chars_per_token": ratio,
+           "cached": None if cache is None else cache.get("ttl", "5m"), "chars_per_token": ratio,
            "calibration": (calibration or {}).get("from"),
            "records_shown": {"expected": len(shown_expected), "worst": len(shown_worst), "sample_cap": sample_cap}}
+    if choice is not None and choice.other:
+        out["provider"] = choice.provider
+        out["endpoint"] = choice.endpoint
+    if choice is not None and choice.flag_price:
+        out["price_source"] = choice.price_source
     if recorded is not None:
         out["recorded"] = {"calls": len(recorded.good_lines), "cost_usd": recorded.cost}
     return out
@@ -2530,12 +3024,12 @@ def print_estimate(est: Dict[str, Any], say: Callable[..., None]) -> None:
     measured = est["calibration"]
     if isinstance(measured, list):
         measured = ", ".join(measured)
-    say(f"Estimate for {est['model']}, before any call ("
+    say(f"Estimate for {est['model']}" + (f" on {est['provider']}" if "provider" in est else "") + ", before any call ("
         + (f"yields and tokens measured by {measured}" if measured else
            "rough: yields and output tokens are the EST_* figures until a pilot measures them")
         + f"; {est['chars_per_token']:.2f} characters per input token; system prompts "
         + ({"1h": "cached for an hour", "5m": "cached for five minutes"}.get(est["cached"], "cached")
-           if est["cached"] else "not cached")
+           if est["cached"] else "counted uncached" if "provider" in est else "not cached")
         + (f"; at most {est['core_quota']} items per category from the core" if est["core_quota"] is not None else "")
         + "):")
     staged = any("core" in row["stages"] for row in est["categories"].values())
@@ -2585,6 +3079,12 @@ def print_estimate(est: Dict[str, Any], say: Callable[..., None]) -> None:
     if "recorded" in est:
         say(f"  the log already holds {est['recorded']['calls']} calls ({money(est['recorded']['cost_usd'])}); "
             "a --resume replays them free")
+    if "provider" in est:
+        say(f"  ({est['provider']} at {est['endpoint']}: the guessed tokens per call were measured on Claude, and "
+            "another model counts tokens its own way and spends output tokens reasoning; every prompt is counted "
+            "uncached. Before a full run, build a small pilot set and pass its folder with --estimate-from.)")
+    if est.get("price_source"):
+        say(f"  (priced at {est['price_source']})")
     say(f"  (* a guessed yield; ? measured on fewer than {EST_TRUST_UNITS} units. A reply can run longer than these "
         "averages, and the cache saves only while it holds; --max-cost is the guard, and the bill is the authority.)")
 
@@ -2612,8 +3112,15 @@ def print_summary(result: Dict[str, Any]) -> None:
         print("  " + f"{cat:22}" + "".join(f"{c:>8}" for c in cells) + f"  {n['stopped'] or ''}")
     model = m["model"]
     cost = f"${model['cost_usd']:.2f}" if model["cost_usd"] is not None else "no price on file"
-    print(f"  model: {model['calls']} calls ({model['retry_calls']} retries), {model['input_tokens']:,} input and "
-          f"{model['output_tokens']:,} output tokens, {cost}; {model['started']} to {model['finished']} (UTC)")
+    where = f" ({model['provider']})" if model.get("provider") else ""
+    # Input is the part neither written to nor read from the cache, as every provider's
+    # call log counts it, so the cache tokens are printed beside it.
+    reasoning = (f" ({model['reasoning_tokens']:,} of them reasoning)" if model.get("reasoning_tokens") is not None
+                 else "")
+    print(f"  model{where}: {model['calls']} calls ({model['retry_calls']} retries), {model['input_tokens']:,} input, "
+          f"{model['cache_creation_input_tokens']:,} written to and {model['cache_read_input_tokens']:,} read from the "
+          f"cache, {model['output_tokens']:,} output tokens{reasoning}, {cost}; {model['started']} to "
+          f"{model['finished']} (UTC)")
     for half, w in (halves or {None: {"manifest": m}}).items():
         lint = w["manifest"]["lint"]
         label = f"{half} half: " if half else ""
@@ -2646,7 +3153,25 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--targets", default=str(DEFAULT_TARGET),
                    help="Publishable items per category: one number for every category, or category=number pairs "
                         f"(default {DEFAULT_TARGET}, the standard minimum)")
-    p.add_argument("--model", default=DEFAULT_MODEL, help=f"Generation model (default {DEFAULT_MODEL})")
+    p.add_argument("--provider", default="anthropic", choices=PROVIDERS,
+                   help="Who runs the model: anthropic (the default), openai or google. openai with --base-url is any "
+                        "endpoint that speaks OpenAI's chat format")
+    p.add_argument("--model", default=None,
+                   help="Generation model (default: " + ", ".join(f"{name} on {who}" for who, name in DEFAULT_MODELS.items())
+                        + "; required with --base-url)")
+    p.add_argument("--base-url", default=None, metavar="URL",
+                   help="With --provider openai: send the calls to this endpoint instead of OpenAI's, such as "
+                        "http://localhost:11434/v1 for a local Ollama server. It gets a key only from --api-key-env, "
+                        "never OPENAI_API_KEY. Recorded in the set")
+    p.add_argument("--price-in", type=float, default=None, metavar="USD",
+                   help="With --price-out: the model's input price in US dollars per million tokens, in place of the "
+                        "price table (which can go stale) or for a model it does not list, so --max-cost can count. "
+                        "Cache reads and writes are counted at this price too. Recorded in the set")
+    p.add_argument("--price-out", type=float, default=None, metavar="USD",
+                   help="With --price-in: the model's output price in US dollars per million tokens")
+    p.add_argument("--max-output-tokens", type=int, default=None, metavar="N",
+                   help="With --base-url: the most tokens a reply may use, sent as max_tokens (by default the endpoint "
+                        "decides)")
     p.add_argument("--store-ids", action="store_true",
                    help="The corpus keeps its store's own ids (a private set); never a standard result")
     p.add_argument("--release", action="store_true",
@@ -2693,12 +3218,19 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--check-api", action="store_true",
                    help="One tiny call that proves the key and the network: ok and the model, or the error's class")
     p.add_argument("--api-key-env", default=None, metavar="NAME",
-                   help="Read the API key from this one environment variable instead of ANTHROPIC_API_KEY, and send "
-                        "every call to api.anthropic.com whatever ANTHROPIC_BASE_URL says. Not recorded")
+                   help="Read the API key from this one environment variable instead of the provider's own "
+                        "(ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY or GOOGLE_API_KEY), and send every call to "
+                        "the provider's official endpoint whatever its base-URL variable says. With --base-url, the "
+                        "only way to give that endpoint a key. Not recorded")
     args = p.parse_args(argv)
+
+    def choose() -> ModelChoice:
+        return ModelChoice(args.provider, args.model, base_url=args.base_url, api_key_env=args.api_key_env,
+                           price_in=args.price_in, price_out=args.price_out, max_output_tokens=args.max_output_tokens)
+
     if args.check_api:
         try:
-            served = check_api(args.model, args.api_key_env)
+            served = check_api(choice=choose())
         except GenerateError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 2
@@ -2715,10 +3247,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     try:
         targets = parse_targets(args.targets)
         unit_caps = parse_unit_caps(args.unit_cap)
+        choice = choose()
         if not (args.replay or args.estimate) and args.max_cost is None:
             raise GenerateError("a live run needs --max-cost USD, the most the set may cost; run with --estimate "
                                 "first to see what it is likely to cost")
-        result = generate_set(args.corpus, args.out, args.seed, targets, model_id=args.model,
+        result = generate_set(args.corpus, args.out, args.seed, targets, model_id=choice.model_id, choice=choice,
                               store_ids=args.store_ids, release=args.release, replay=args.replay,
                               resume=args.resume, max_cost=args.max_cost, gold_window=args.gold_window,
                               core=args.core, split_seed=args.split_seed, sealed_out=args.sealed_out,

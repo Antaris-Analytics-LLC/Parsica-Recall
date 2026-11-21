@@ -13,8 +13,8 @@ checked against a list written by hand, tools/dist_files.txt:
 - every packaged file has the same bytes as the file in this repository;
 - the packaged question set matches the hashes in its own manifest;
 - the metadata says what pyproject.toml says: the name, the version in
-  parsica_recall/recall_common.py, the license, the Python floor, and no dependency
-  outside the one optional extra.
+  parsica_recall/recall_common.py, the license, the Python floor, exactly the optional
+  extras in EXTRAS, and no dependency but each extra's own SDK.
 
 Standard library only. Exit status: 0 when everything holds, 1 when anything does not,
 2 when the folder does not hold exactly one wheel and one source archive.
@@ -37,7 +37,10 @@ LIST = os.path.join(REPO, "tools", "dist_files.txt")
 NAME = "parsica-recall"
 DIST = "parsica_recall"
 MAX_BYTES = 12 * 1024 * 1024      # the wheel is about 2 MB; a much larger one holds something it should not
-ALLOWED_EXTRAS = {"generate"}
+# The optional extras and the one SDK each installs: generate is the anthropic SDK (both
+# generators), openai and google are the question builder's other providers. Nothing is
+# installed without an extra.
+EXTRAS = {"generate": "anthropic", "openai": "openai", "google": "google-genai"}
 
 
 def sha256(data: bytes) -> str:
@@ -117,10 +120,13 @@ def check_metadata(text: str, ver: str, where: str, problems: List[str]) -> None
             problems.append(f"{where}: {key} is {meta.get(key)!r}, expected {value!r}")
     for req in meta.get_all("Requires-Dist") or []:
         extra = re.search(r"""extra\s*==\s*['"]([^'"]+)['"]""", req)
-        if not extra or extra.group(1) not in ALLOWED_EXTRAS:
-            problems.append(f"{where}: a dependency outside the optional extra: {req}")
-    if sorted(meta.get_all("Provides-Extra") or []) != sorted(ALLOWED_EXTRAS):
-        problems.append(f"{where}: extras are {meta.get_all('Provides-Extra')}, expected {sorted(ALLOWED_EXTRAS)}")
+        package = re.sub(r"[-_.]+", "-", re.match(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)", req).group(1)).lower()
+        if not extra or extra.group(1) not in EXTRAS:
+            problems.append(f"{where}: a dependency outside the optional extras: {req}")
+        elif package != EXTRAS[extra.group(1)]:
+            problems.append(f"{where}: the extra {extra.group(1)} brings {package}, expected {EXTRAS[extra.group(1)]}: {req}")
+    if sorted(meta.get_all("Provides-Extra") or []) != sorted(EXTRAS):
+        problems.append(f"{where}: extras are {meta.get_all('Provides-Extra')}, expected {sorted(EXTRAS)}")
 
 
 def check_question_set(found: Dict[str, bytes], prefix: str, where: str, problems: List[str]) -> None:
