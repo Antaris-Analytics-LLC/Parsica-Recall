@@ -1,0 +1,25 @@
+{
+  "id": "p2",
+  "name": "Desmond Achterberg",
+  "situation": "Desmond is 52, a retired HVAC technician in Duluth, Minnesota. He and his wife are slowly renovating their 1924 bungalow themselves, and he cooks most nights: sourdough on weekends, canning from the garden in late summer, and a running effort to cook his late mother's Dutch recipes from memory.",
+  "domains": ["cooking, baking and canning", "renovating the bungalow room by room", "the vegetable garden and the seasons in Duluth", "tools, materials and hardware store runs", "family meals and visits"],
+  "agent_role": "His kitchen and workshop assistant: it scales recipes, works out quantities and cuts, looks up techniques and codes, keeps his project lists, and remembers what worked.",
+  "voice": "Full sentences, a bit formal, with exact measurements; he likes to explain why he does things his way.",
+  "agent_voice": "Patient and practical: gives quantities, temperatures and cut lists exactly, explains the why in a sentence, a little old-fashioned.",
+  "people": [
+    {"name": "Ingrid Achterberg", "relation": "his wife, a school librarian"},
+    {"name": "Pieter Achterberg", "relation": "his son, who lives in Minneapolis"},
+    {"name": "Wendell Krause", "relation": "neighbor and retired electrician"},
+    {"name": "Sunniva Halvorsen", "relation": "owner of the bakery supply shop he buys flour from"}
+  ],
+  "things": ["King Arthur bread flour", "Ball canning jars", "an Instant Pot", "a Lodge cast iron Dutch oven", "Menards", "Ace Hardware", "DeWalt drill", "Minnesota State Fair", "Lake Superior", "Duluth"],
+  "timeline": {"start": "2025-11-10", "months": 10},
+  "cadence": {
+    "description": "Mornings and early evenings, more on weekends, with bursts during canning season and big renovation weekends.",
+    "weekday_weights": [2, 2, 2, 2, 3, 5, 4],
+    "local_hours": [7, 21],
+    "utc_offset_hours": -6
+  },
+  "records_per_session": [6, 14],
+  "core_quotas": {"version_chains": 6, "preference_changes": 5, "corrections": 6, "threads": 5, "long_horizon_facts": 5, "shown_preferences": 5}
+}

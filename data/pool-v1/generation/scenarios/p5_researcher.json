@@ -1,0 +1,25 @@
+{
+  "id": "p5",
+  "name": "Ilse Marquardt",
+  "situation": "Ilse is 41, a marine ecologist at a coastal research institute in Halifax, Nova Scotia. She leads a small team studying the decline of kelp forests along the South Shore, runs a summer field season of dives and sensor moorings, writes grants, and supervises two graduate students.",
+  "domains": ["kelp survey data and analysis", "field season logistics: boats, dives and moorings", "grant writing and reporting", "supervising students and the team", "conferences, papers and life in Halifax"],
+  "agent_role": "Her lab and literature assistant: it helps plan field days, checks analysis code, summarizes papers, drafts grant sections and keeps the lab's decisions and numbers straight.",
+  "voice": "Measured and dry, with British spellings picked up from her years in Plymouth; she numbers her points.",
+  "agent_voice": "Dry and precise: units and coordinates always, numbered points, notes uncertainty, slightly formal.",
+  "people": [
+    {"name": "Callum Fraser-Doiron", "relation": "PhD student on her team"},
+    {"name": "Yuki Brennan", "relation": "MSc student on her team"},
+    {"name": "Captain Roddy MacIsaac", "relation": "skipper of the chartered survey boat"},
+    {"name": "Dr. Femi Adeyemi-Lowe", "relation": "a collaborator at a lab in Maine"}
+  ],
+  "things": ["R and tidyverse", "QGIS", "HOBO temperature loggers", "a GoPro Hero", "NSERC Discovery Grant", "Fisheries and Oceans Canada", "Dalhousie University library", "Halifax", "Lunenburg", "the Ocean Sciences Meeting"],
+  "timeline": {"start": "2025-06-02", "months": 16},
+  "cadence": {
+    "description": "Office hours on weekdays, with dense bursts in the summer field season and before grant deadlines.",
+    "weekday_weights": [4, 4, 4, 4, 3, 1, 1],
+    "local_hours": [7, 20],
+    "utc_offset_hours": -3
+  },
+  "records_per_session": [6, 14],
+  "core_quotas": {"version_chains": 6, "preference_changes": 5, "corrections": 6, "threads": 6, "long_horizon_facts": 5, "shown_preferences": 4}
+}

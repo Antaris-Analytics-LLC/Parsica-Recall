@@ -1,0 +1,26 @@
+{
+  "id": "p7",
+  "name": "Bethany Kowalczyk",
+  "situation": "Bethany is 38 and lives in Columbus, Ohio, with her husband and three children, ages 4, 9 and 12. She works three days a week as a dental hygienist and runs the household calendar: school, sports, appointments, meals, the budget and a slowly growing list of house projects.",
+  "domains": ["the family calendar: school, activities and appointments", "meal planning, groceries and the budget", "the kids' health, school and friendships", "house projects and the car", "her work schedule and her own time"],
+  "agent_role": "Her family organizer: it keeps the calendar and lists, plans meals around the week, tracks forms, payments and appointments, and remembers the details of each kid's world.",
+  "voice": "Warm and fast, lots of lists, often written in the car line; she uses the kids' nicknames.",
+  "agent_voice": "Warm and organized: checklists, who needs what by when, gentle reminders, uses the kids' names.",
+  "people": [
+    {"name": "Darnell Kowalczyk", "relation": "her husband, an HVAC sales rep"},
+    {"name": "Zofia", "relation": "her daughter, 12, called Zo"},
+    {"name": "Miles", "relation": "her son, 9"},
+    {"name": "Hattie", "relation": "her youngest, 4"},
+    {"name": "Patrice Oduya", "relation": "her best friend and carpool partner"}
+  ],
+  "things": ["Kroger", "Costco", "Google Calendar", "Columbus City Schools", "Nationwide Children's Hospital", "a Honda Odyssey", "Target", "Columbus Metropolitan Library", "YMCA of Central Ohio"],
+  "timeline": {"start": "2025-08-25", "months": 12},
+  "cadence": {
+    "description": "Short sessions scattered through the day, evenings after bedtime for planning, Sunday nights for the week ahead.",
+    "weekday_weights": [3, 3, 3, 3, 2, 2, 5],
+    "local_hours": [6, 23],
+    "utc_offset_hours": -5
+  },
+  "records_per_session": [6, 14],
+  "core_quotas": {"version_chains": 6, "preference_changes": 5, "corrections": 6, "threads": 5, "long_horizon_facts": 5, "shown_preferences": 5}
+}

@@ -1,0 +1,80 @@
+# Parsica Recall CI.
+#
+# On every pull request and every push to main:
+#   test:    the unit tests on Python 3.11, 3.12 and 3.13, then the oracle on the current
+#            question set, run twice. The job fails unless the oracle scores gold@5 = 100.0
+#            and the two runs are byte-identical (verified=yes).
+#   package: the package is built, its contents are checked against tools/dist_files.txt,
+#            and the wheel is installed into a clean environment and run from an empty folder.
+#
+# Standard library only. Nothing here needs a secret.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+      - name: Oracle on the current question set, run twice
+        run: |
+          python -m parsica_recall run --adapter oracle --verify --output "$RUNNER_TEMP/oracle.json"
+          python - "$RUNNER_TEMP/oracle.json" <<'PY'
+          import json, sys
+          line = json.load(open(sys.argv[1], encoding="utf-8"))["result_line"]
+          fields = dict(part.split("=", 1) for part in line.split() if "=" in part)
+          print(line)
+          assert float(fields["gold@5"]) == 100.0, f"oracle gold@5 is {fields['gold@5']}, expected 100.0"
+          assert fields["verified"] == "yes", f"oracle verified={fields['verified']}, expected yes"
+          print("oracle: gold@5 == 100.0 and verified=yes")
+          PY
+
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build the wheel and the source archive
+        run: |
+          python -m pip install build
+          python -m build
+      - name: Check what was built against tools/dist_files.txt
+        run: python tools/check_dist.py dist
+      - name: Install the wheel into a clean environment and run it from an empty folder
+        run: |
+          python -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/python" -m pip install dist/*.whl
+          mkdir "$RUNNER_TEMP/empty"
+          cd "$RUNNER_TEMP/empty"
+          "$RUNNER_TEMP/venv/bin/parsica-recall" --version
+          "$RUNNER_TEMP/venv/bin/parsica-recall" run --adapter oracle --verify --output oracle.json
+          "$RUNNER_TEMP/venv/bin/python" - oracle.json <<'PY'
+          import json, sys
+          res = json.load(open(sys.argv[1], encoding="utf-8"))
+          fields = dict(part.split("=", 1) for part in res["result_line"].split() if "=" in part)
+          assert float(fields["gold@5"]) == 100.0 and fields["verified"] == "yes", res["result_line"]
+          harness = res["manifest"]["harness_version"]
+          assert harness["commit"] == "unknown" and harness["source_sha256"].startswith("sha256:"), harness
+          print("installed copy: oracle gold@5 == 100.0, verified=yes, pinned by", harness["source_sha256"][:23])
+          PY

@@ -1,0 +1,35 @@
+{
+  "pool": "pool-v1",
+  "seed": 1,
+  "model": "claude-sonnet-5-5",
+  "core": 1000,
+  "total": 10000,
+  "effort": {
+    "core": "high",
+    "tail": "medium"
+  },
+  "personas": [
+    "p1",
+    "p2",
+    "p3",
+    "p4",
+    "p5",
+    "p6",
+    "p7",
+    "p8"
+  ],
+  "scenarios": {
+    "p1": "d70775c6759e6a95c6f9c4009551cd86a8511309d1dfd4221df0fe5c585c2671",
+    "p2": "e2367d47d39e51968a69b750156979db38118ac023ef611fdeb5bf0bdeb210a1",
+    "p3": "b62ef1141d0eb8bc325e1039f740bd176eb447b8d81c611bf50df96951c229f3",
+    "p4": "ccf54b21c2dd4fe6f85e2a45ed4074c0be1342e5e79820cd6e4eaea2ad0e30fe",
+    "p5": "dc829c374b87e7f57fe9a2671da1367c8f579ec4d637e429ccbbb61cc3e9cfc9",
+    "p6": "872d1fa17753d2f2c5cdf2e2f067b390119e00652f96b0a56501c47d6c05f832",
+    "p7": "d7b8ac3bf38011f7bd1e22935e9cc14081466f48827069e2c2dc40f26a7f6a9b",
+    "p8": "030f9ac6af38e9dda890bf628e672be4f35ec69f1e895ec3542f98059e7d92e2"
+  },
+  "prompts": {
+    "core_session.md": "30a64524037f9e52ced3d777a75df814ba1bdae0c371c66f16b7a355fc576b5b",
+    "tail_session.md": "841d1bcbe7156890f086308115b84c12c95a9e80076e45c64634479cc21d0993"
+  }
+}

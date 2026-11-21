@@ -1,0 +1,11 @@
+# Git writes these files with LF line endings on every operating system, so the frozen
+# prompts, the docs and the data files have the same bytes, and the same hashes, everywhere.
+# Without this, git's core.autocrlf checks them out with CRLF on Windows.
+prompts/*.md text eol=lf
+prompts/pool/*.md text eol=lf
+scenarios/*.json text eol=lf
+docs/*.md text eol=lf
+data/** text eol=lf
+sealed/** text eol=lf
+# SQLite files are binary: no line-ending conversion, no diff.
+*.sqlite binary

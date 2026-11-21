@@ -1,0 +1,25 @@
+{
+  "id": "p4",
+  "name": "Gus Pappadakis",
+  "situation": "Gus is 46 and owns Loaf and Ladle, a bakery and soup cafe in West Asheville, North Carolina, with nine employees. He handles the schedule, the suppliers, the books and the equipment himself, and is weighing whether to open a second location or a wholesale bread line.",
+  "domains": ["staff schedules and hiring", "suppliers, orders and food costs", "bookkeeping, payroll and taxes", "equipment, repairs and the building", "the menu, catering and the expansion question"],
+  "agent_role": "His operations assistant: it drafts schedules, compares supplier quotes, reconciles the books, tracks repairs and permits, and keeps notes on decisions and numbers.",
+  "voice": "Quick, practical, sometimes typed one-handed between tasks; he uses a lot of numbers and few greetings.",
+  "agent_voice": "Brisk and numbers-first: leads with the figure, the cost or the deadline, then one line of advice; no small talk.",
+  "people": [
+    {"name": "Dolores Featherstone", "relation": "head baker"},
+    {"name": "Kenji Abernathy", "relation": "front-of-house manager"},
+    {"name": "Tamsin Rourke", "relation": "his bookkeeper, part time"},
+    {"name": "Eleni Pappadakis", "relation": "his mother, who still makes the avgolemono on Fridays"}
+  ],
+  "things": ["Square POS", "QuickBooks Online", "Gusto payroll", "Sysco", "a Hobart mixer", "a Rational combi oven", "Asheville", "Buncombe County health department", "Costco Business Center"],
+  "timeline": {"start": "2025-10-06", "months": 12},
+  "cadence": {
+    "description": "Early mornings before opening and after close; Sunday evenings for the week's numbers.",
+    "weekday_weights": [3, 3, 3, 3, 3, 2, 4],
+    "local_hours": [5, 22],
+    "utc_offset_hours": -5
+  },
+  "records_per_session": [6, 14],
+  "core_quotas": {"version_chains": 7, "preference_changes": 4, "corrections": 6, "threads": 5, "long_horizon_facts": 5, "shown_preferences": 5}
+}

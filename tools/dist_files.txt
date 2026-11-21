@@ -1,0 +1,139 @@
+# Every file a built package may hold. tools/check_dist.py fails a build that holds one
+# file more or one file fewer, or a file whose bytes differ from this repository's.
+#
+#   path in the archive <- path in this repository
+#   path in the archive              (a file the build writes itself: the metadata)
+#
+# {version} stands for the version in parsica_recall/recall_common.py. Adding a module or a
+# data file to the package means adding a line here, on purpose.
+
+[wheel]
+parsica_recall-{version}.dist-info/METADATA
+parsica_recall-{version}.dist-info/RECORD
+parsica_recall-{version}.dist-info/WHEEL
+parsica_recall-{version}.dist-info/entry_points.txt
+parsica_recall-{version}.dist-info/licenses/LICENSE <- LICENSE
+parsica_recall/__init__.py <- parsica_recall/__init__.py
+parsica_recall/__main__.py <- parsica_recall/__main__.py
+parsica_recall/adapters.py <- parsica_recall/adapters.py
+parsica_recall/cli.py <- parsica_recall/cli.py
+parsica_recall/compare_results.py <- parsica_recall/compare_results.py
+parsica_recall/export_planted_pairs.py <- parsica_recall/export_planted_pairs.py
+parsica_recall/generate_pool.py <- parsica_recall/generate_pool.py
+parsica_recall/generate_questions.py <- parsica_recall/generate_questions.py
+parsica_recall/lint_validator.py <- parsica_recall/lint_validator.py
+parsica_recall/recall_common.py <- parsica_recall/recall_common.py
+parsica_recall/reference_adapters.py <- parsica_recall/reference_adapters.py
+parsica_recall/relint_set.py <- parsica_recall/relint_set.py
+parsica_recall/results_file.py <- parsica_recall/results_file.py
+parsica_recall/run_benchmark.py <- parsica_recall/run_benchmark.py
+parsica_recall/show_pool.py <- parsica_recall/show_pool.py
+parsica_recall/show_questions.py <- parsica_recall/show_questions.py
+parsica_recall/README.md <- README.md
+parsica_recall/parsica_recall_lint_spec.json <- parsica_recall_lint_spec.json
+parsica_recall/prompts/abstention.md <- prompts/abstention.md
+parsica_recall/prompts/correction_handling.md <- prompts/correction_handling.md
+parsica_recall/prompts/cross_session.md <- prompts/cross_session.md
+parsica_recall/prompts/direct_recall_agent.md <- prompts/direct_recall_agent.md
+parsica_recall/prompts/direct_recall_user.md <- prompts/direct_recall_user.md
+parsica_recall/prompts/entity_attribution.md <- prompts/entity_attribution.md
+parsica_recall/prompts/implicit_preference.md <- prompts/implicit_preference.md
+parsica_recall/prompts/knowledge_update.md <- prompts/knowledge_update.md
+parsica_recall/prompts/long_horizon.md <- prompts/long_horizon.md
+parsica_recall/prompts/paraphrase_recall.md <- prompts/paraphrase_recall.md
+parsica_recall/prompts/recency_preference.md <- prompts/recency_preference.md
+parsica_recall/prompts/temporal_awareness.md <- prompts/temporal_awareness.md
+parsica_recall/prompts/vocabulary_gap.md <- prompts/vocabulary_gap.md
+parsica_recall/prompts/pool/core_session.md <- prompts/pool/core_session.md
+parsica_recall/prompts/pool/tail_session.md <- prompts/pool/tail_session.md
+parsica_recall/scenarios/p1_founder.json <- scenarios/p1_founder.json
+parsica_recall/scenarios/p2_home_cook.json <- scenarios/p2_home_cook.json
+parsica_recall/scenarios/p3_grad_student.json <- scenarios/p3_grad_student.json
+parsica_recall/scenarios/p4_small_business.json <- scenarios/p4_small_business.json
+parsica_recall/scenarios/p5_researcher.json <- scenarios/p5_researcher.json
+parsica_recall/scenarios/p6_traveler.json <- scenarios/p6_traveler.json
+parsica_recall/scenarios/p7_parent.json <- scenarios/p7_parent.json
+parsica_recall/scenarios/p8_hobbyist.json <- scenarios/p8_hobbyist.json
+parsica_recall/data/v11/corpus.jsonl <- data/v11/corpus.jsonl
+parsica_recall/data/v11/lint_report.json <- data/v11/lint_report.json
+parsica_recall/data/v11/manifest.json <- data/v11/manifest.json
+parsica_recall/data/v11/questions.json <- data/v11/questions.json
+parsica_recall/data/v11/reference.json <- data/v11/reference.json
+parsica_recall/data/v11/generation/prompts/abstention.md <- data/v11/generation/prompts/abstention.md
+parsica_recall/data/v11/generation/prompts/correction_handling.md <- data/v11/generation/prompts/correction_handling.md
+parsica_recall/data/v11/generation/prompts/cross_session.md <- data/v11/generation/prompts/cross_session.md
+parsica_recall/data/v11/generation/prompts/direct_recall_agent.md <- data/v11/generation/prompts/direct_recall_agent.md
+parsica_recall/data/v11/generation/prompts/direct_recall_user.md <- data/v11/generation/prompts/direct_recall_user.md
+parsica_recall/data/v11/generation/prompts/entity_attribution.md <- data/v11/generation/prompts/entity_attribution.md
+parsica_recall/data/v11/generation/prompts/implicit_preference.md <- data/v11/generation/prompts/implicit_preference.md
+parsica_recall/data/v11/generation/prompts/knowledge_update.md <- data/v11/generation/prompts/knowledge_update.md
+parsica_recall/data/v11/generation/prompts/long_horizon.md <- data/v11/generation/prompts/long_horizon.md
+parsica_recall/data/v11/generation/prompts/paraphrase_recall.md <- data/v11/generation/prompts/paraphrase_recall.md
+parsica_recall/data/v11/generation/prompts/recency_preference.md <- data/v11/generation/prompts/recency_preference.md
+parsica_recall/data/v11/generation/prompts/temporal_awareness.md <- data/v11/generation/prompts/temporal_awareness.md
+parsica_recall/data/v11/generation/prompts/vocabulary_gap.md <- data/v11/generation/prompts/vocabulary_gap.md
+
+[sdist]
+parsica_recall-{version}/PKG-INFO
+parsica_recall-{version}/.gitignore <- .gitignore
+parsica_recall-{version}/LICENSE <- LICENSE
+parsica_recall-{version}/pyproject.toml <- pyproject.toml
+parsica_recall-{version}/parsica_recall/__init__.py <- parsica_recall/__init__.py
+parsica_recall-{version}/parsica_recall/__main__.py <- parsica_recall/__main__.py
+parsica_recall-{version}/parsica_recall/adapters.py <- parsica_recall/adapters.py
+parsica_recall-{version}/parsica_recall/cli.py <- parsica_recall/cli.py
+parsica_recall-{version}/parsica_recall/compare_results.py <- parsica_recall/compare_results.py
+parsica_recall-{version}/parsica_recall/export_planted_pairs.py <- parsica_recall/export_planted_pairs.py
+parsica_recall-{version}/parsica_recall/generate_pool.py <- parsica_recall/generate_pool.py
+parsica_recall-{version}/parsica_recall/generate_questions.py <- parsica_recall/generate_questions.py
+parsica_recall-{version}/parsica_recall/lint_validator.py <- parsica_recall/lint_validator.py
+parsica_recall-{version}/parsica_recall/recall_common.py <- parsica_recall/recall_common.py
+parsica_recall-{version}/parsica_recall/reference_adapters.py <- parsica_recall/reference_adapters.py
+parsica_recall-{version}/parsica_recall/relint_set.py <- parsica_recall/relint_set.py
+parsica_recall-{version}/parsica_recall/results_file.py <- parsica_recall/results_file.py
+parsica_recall-{version}/parsica_recall/run_benchmark.py <- parsica_recall/run_benchmark.py
+parsica_recall-{version}/parsica_recall/show_pool.py <- parsica_recall/show_pool.py
+parsica_recall-{version}/parsica_recall/show_questions.py <- parsica_recall/show_questions.py
+parsica_recall-{version}/README.md <- README.md
+parsica_recall-{version}/parsica_recall_lint_spec.json <- parsica_recall_lint_spec.json
+parsica_recall-{version}/prompts/abstention.md <- prompts/abstention.md
+parsica_recall-{version}/prompts/correction_handling.md <- prompts/correction_handling.md
+parsica_recall-{version}/prompts/cross_session.md <- prompts/cross_session.md
+parsica_recall-{version}/prompts/direct_recall_agent.md <- prompts/direct_recall_agent.md
+parsica_recall-{version}/prompts/direct_recall_user.md <- prompts/direct_recall_user.md
+parsica_recall-{version}/prompts/entity_attribution.md <- prompts/entity_attribution.md
+parsica_recall-{version}/prompts/implicit_preference.md <- prompts/implicit_preference.md
+parsica_recall-{version}/prompts/knowledge_update.md <- prompts/knowledge_update.md
+parsica_recall-{version}/prompts/long_horizon.md <- prompts/long_horizon.md
+parsica_recall-{version}/prompts/paraphrase_recall.md <- prompts/paraphrase_recall.md
+parsica_recall-{version}/prompts/recency_preference.md <- prompts/recency_preference.md
+parsica_recall-{version}/prompts/temporal_awareness.md <- prompts/temporal_awareness.md
+parsica_recall-{version}/prompts/vocabulary_gap.md <- prompts/vocabulary_gap.md
+parsica_recall-{version}/prompts/pool/core_session.md <- prompts/pool/core_session.md
+parsica_recall-{version}/prompts/pool/tail_session.md <- prompts/pool/tail_session.md
+parsica_recall-{version}/scenarios/p1_founder.json <- scenarios/p1_founder.json
+parsica_recall-{version}/scenarios/p2_home_cook.json <- scenarios/p2_home_cook.json
+parsica_recall-{version}/scenarios/p3_grad_student.json <- scenarios/p3_grad_student.json
+parsica_recall-{version}/scenarios/p4_small_business.json <- scenarios/p4_small_business.json
+parsica_recall-{version}/scenarios/p5_researcher.json <- scenarios/p5_researcher.json
+parsica_recall-{version}/scenarios/p6_traveler.json <- scenarios/p6_traveler.json
+parsica_recall-{version}/scenarios/p7_parent.json <- scenarios/p7_parent.json
+parsica_recall-{version}/scenarios/p8_hobbyist.json <- scenarios/p8_hobbyist.json
+parsica_recall-{version}/data/v11/corpus.jsonl <- data/v11/corpus.jsonl
+parsica_recall-{version}/data/v11/lint_report.json <- data/v11/lint_report.json
+parsica_recall-{version}/data/v11/manifest.json <- data/v11/manifest.json
+parsica_recall-{version}/data/v11/questions.json <- data/v11/questions.json
+parsica_recall-{version}/data/v11/reference.json <- data/v11/reference.json
+parsica_recall-{version}/data/v11/generation/prompts/abstention.md <- data/v11/generation/prompts/abstention.md
+parsica_recall-{version}/data/v11/generation/prompts/correction_handling.md <- data/v11/generation/prompts/correction_handling.md
+parsica_recall-{version}/data/v11/generation/prompts/cross_session.md <- data/v11/generation/prompts/cross_session.md
+parsica_recall-{version}/data/v11/generation/prompts/direct_recall_agent.md <- data/v11/generation/prompts/direct_recall_agent.md
+parsica_recall-{version}/data/v11/generation/prompts/direct_recall_user.md <- data/v11/generation/prompts/direct_recall_user.md
+parsica_recall-{version}/data/v11/generation/prompts/entity_attribution.md <- data/v11/generation/prompts/entity_attribution.md
+parsica_recall-{version}/data/v11/generation/prompts/implicit_preference.md <- data/v11/generation/prompts/implicit_preference.md
+parsica_recall-{version}/data/v11/generation/prompts/knowledge_update.md <- data/v11/generation/prompts/knowledge_update.md
+parsica_recall-{version}/data/v11/generation/prompts/long_horizon.md <- data/v11/generation/prompts/long_horizon.md
+parsica_recall-{version}/data/v11/generation/prompts/paraphrase_recall.md <- data/v11/generation/prompts/paraphrase_recall.md
+parsica_recall-{version}/data/v11/generation/prompts/recency_preference.md <- data/v11/generation/prompts/recency_preference.md
+parsica_recall-{version}/data/v11/generation/prompts/temporal_awareness.md <- data/v11/generation/prompts/temporal_awareness.md
+parsica_recall-{version}/data/v11/generation/prompts/vocabulary_gap.md <- data/v11/generation/prompts/vocabulary_gap.md
