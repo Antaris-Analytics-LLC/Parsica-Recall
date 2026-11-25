@@ -30,11 +30,13 @@ dependencies = []
 
 [project.optional-dependencies]
 # Only a live run of the question builder or the pool generator calls a model. generate is
-# the Anthropic SDK (both); openai and google are the question builder's other providers,
-# at the versions the provider tests were run with or later.
+# the Anthropic SDK (both); openai (OpenAI and Azure), google and bedrock (Claude on Amazon
+# Bedrock, the Anthropic SDK with its AWS signing) are the question builder's other
+# providers, at the versions the provider tests were run with or later.
 generate = ["anthropic>=2"]
 openai = ["openai>=3.57"]
 google = ["google-genai>=3.6"]
+bedrock = ["anthropic[bedrock]>=2.12"]
 
 [project.scripts]
 parsica-recall = "parsica_recall.cli:main"
@@ -71,6 +73,20 @@ packages = ["parsica_recall"]
 "prompts/recency_preference.md" = "parsica_recall/prompts/recency_preference.md"
 "prompts/temporal_awareness.md" = "parsica_recall/prompts/temporal_awareness.md"
 "prompts/vocabulary_gap.md" = "parsica_recall/prompts/vocabulary_gap.md"
+"prompts/v7/abstention.md" = "parsica_recall/prompts/v7/abstention.md"
+"prompts/v7/correction_handling.md" = "parsica_recall/prompts/v7/correction_handling.md"
+"prompts/v7/cross_session.md" = "parsica_recall/prompts/v7/cross_session.md"
+"prompts/v7/direct_recall_agent.md" = "parsica_recall/prompts/v7/direct_recall_agent.md"
+"prompts/v7/direct_recall_user.md" = "parsica_recall/prompts/v7/direct_recall_user.md"
+"prompts/v7/entity_attribution.md" = "parsica_recall/prompts/v7/entity_attribution.md"
+"prompts/v7/implicit_preference.md" = "parsica_recall/prompts/v7/implicit_preference.md"
+"prompts/v7/knowledge_update.md" = "parsica_recall/prompts/v7/knowledge_update.md"
+"prompts/v7/long_horizon.md" = "parsica_recall/prompts/v7/long_horizon.md"
+"prompts/v7/paraphrase_recall.md" = "parsica_recall/prompts/v7/paraphrase_recall.md"
+"prompts/v7/recency_preference.md" = "parsica_recall/prompts/v7/recency_preference.md"
+"prompts/v7/temporal_awareness.md" = "parsica_recall/prompts/v7/temporal_awareness.md"
+"prompts/v7/vocabulary_gap.md" = "parsica_recall/prompts/v7/vocabulary_gap.md"
+"prompts/checks/common_answer.md" = "parsica_recall/prompts/checks/common_answer.md"
 "prompts/pool/core_session.md" = "parsica_recall/prompts/pool/core_session.md"
 "prompts/pool/tail_session.md" = "parsica_recall/prompts/pool/tail_session.md"
 "scenarios/p1_founder.json" = "parsica_recall/scenarios/p1_founder.json"

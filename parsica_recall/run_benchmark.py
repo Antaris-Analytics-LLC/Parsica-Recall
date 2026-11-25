@@ -155,11 +155,13 @@ def load_questions(path: str, pool_ids: Optional[set]) -> List[Dict[str, Any]]:
 
 def load_qset_manifest(questions_path: str, corpus_path: Optional[str]) -> Dict[str, Any]:
     """Reads manifest.json next to the questions file, if there is one, and checks
-    that it describes these exact files (just the questions in live mode)."""
+    that it describes these exact files (just the questions in live mode). The set's
+    writer is taken from it only when it matches; otherwise the writer is unknown."""
     path = os.path.join(os.path.dirname(os.path.abspath(questions_path)), "manifest.json")
     q_sha = rc.file_sha256(questions_path)
     info = {"version": "unknown", "sha256": q_sha, "manifest": None, "matches": False,
-            "gates_passed": None, "status": "unknown", "failed_gates": []}
+            "gates_passed": None, "status": "unknown", "failed_gates": [],
+            "writer": "unknown", "writer_record": None}
     if not os.path.exists(path):
         return info
     with open(path, encoding="utf-8") as f:
@@ -177,7 +179,59 @@ def load_qset_manifest(questions_path: str, corpus_path: Optional[str]) -> Dict[
         "failed_gates": lint.get("failed_gates", []),
         "status": m.get("status", "unknown"),
     })
+    if matches:
+        info["writer"] = rc.writer_label(m.get("model"))
+        info["writer_record"] = rc.writer_record(m.get("model"))
     return info
+
+
+def reference_floor(pool: "Pool", questions: List[Dict[str, Any]], band: Dict[str, Any]) -> Dict[str, Any]:
+    """Plain BM25, the reference adapter, on the same pool and the same questions: the floor
+    every file-mode result prints beside its score (spec section 6). The harness runs it in
+    the same invocation and never reads it from a file. Each answerable question is searched
+    once at the band's window and scored by the headline rule (gold_ranks)."""
+    from .reference_adapters import REFERENCE_VERSION, BM25Adapter
+
+    adapter = BM25Adapter()
+    workspace = tempfile.mkdtemp(prefix="parsica_recall_floor_")
+    ranks: List[Optional[int]] = []
+    try:
+        adapter.setup(workspace, "file")
+        for rec in pool.records:
+            adapter.ingest(rec)
+        adapter.save()
+        for q in questions:
+            if scoring_rule(q) == "abstention":
+                continue
+            entries, _ = build_window(adapter.search(q["question"], band["window"]), band["window"])
+            ranks.append(gold_ranks(q, entries)["headline_rank"])
+    finally:
+        try:
+            adapter.teardown()
+        finally:
+            shutil.rmtree(workspace, ignore_errors=True)
+    return {"adapter": f"bm25@{REFERENCE_VERSION}", "gold": _gold_at(ranks, band["k_set"]), "n": len(ranks)}
+
+
+def reference_json_floor(questions_path: str, qset: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The bm25 run in the reference.json beside the questions, when its line names this
+    question set by version and hash: the floor on the pool the set was built from, which
+    the report quotes beside a result (live mode cannot compute its own)."""
+    path = os.path.join(os.path.dirname(os.path.abspath(questions_path)), "reference.json")
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            run = ((json.load(f).get("runs") or {}).get("bm25")) or {}
+    except (OSError, ValueError, AttributeError):
+        return None
+    fields = dict(part.split("=", 1) for part in str(run.get("result_line") or "").split() if "=" in part)
+    if fields.get("qset") != f"{qset['version']}@{qset['sha256'][:8]}" or not fields.get("k"):
+        return None
+    gold = (run.get("gold") or {}).get(fields["k"])
+    if gold is None:
+        return None
+    return {"k": int(fields["k"]), "gold": gold, "N": fields.get("N")}
 
 
 def harness_commit() -> Dict[str, Any]:
@@ -327,6 +381,24 @@ def live_question_constants(q: Dict[str, Any]) -> Dict[str, Any]:
     return {"variants": variants, "gold_tokens": [], "G": len(gold), "G_exact": None, "G_family": None}
 
 
+def gold_ranks(q: Dict[str, Any], entries: List[Dict[str, Any]]) -> Dict[str, Optional[int]]:
+    """A question's gold ranks in its window (spec section 5): gold_rank is where the first
+    gold record sits, gold_all_rank where the last of its gold records first appears (None
+    until every one has), and headline_rank whichever of the two the question's scoring
+    rule reads: every gold record for rc.ALL_GOLD_CATEGORIES, the first one elsewhere, none
+    for abstention. The headline and the reference floor both take it from here."""
+    gold_set = set(q.get("gold_ids") or [])
+    gold_rank = next((e["rank"] for e in entries if e["id"] in gold_set), None)
+    first_pos: Dict[str, int] = {}
+    for e in entries:
+        if e["id"] in gold_set and e["id"] not in first_pos:
+            first_pos[e["id"]] = e["rank"]
+    gold_all_rank = max(first_pos.values()) if gold_set and len(first_pos) == len(gold_set) else None
+    rule = scoring_rule(q)
+    headline = gold_rank if rule == "gold_any" else gold_all_rank if rule == "gold_all" else None
+    return {"gold_rank": gold_rank, "gold_all_rank": gold_all_rank, "headline_rank": headline}
+
+
 def score_question(q: Dict[str, Any], const: Dict[str, Any], entries: List[Dict[str, Any]],
                    pool: Pool) -> Dict[str, Any]:
     gold = list(q.get("gold_ids") or [])
@@ -335,12 +407,8 @@ def score_question(q: Dict[str, Any], const: Dict[str, Any], entries: List[Dict[
     for e in entries:
         e["gold"] = e["id"] in gold_set
 
-    gold_rank = next((e["rank"] for e in entries if e["gold"]), None)
-    first_pos = {}
-    for e in entries:
-        if e["gold"] and e["id"] not in first_pos:
-            first_pos[e["id"]] = e["rank"]
-    gold_all_rank = max(first_pos.values()) if gold and len(first_pos) == len(gold_set) else None
+    ranks = gold_ranks(q, entries)
+    gold_rank, gold_all_rank = ranks["gold_rank"], ranks["gold_all_rank"]
     first_nongold = next((e["rank"] for e in entries if not e["gold"]), None)
 
     version_ok = None
@@ -350,24 +418,22 @@ def score_question(q: Dict[str, Any], const: Dict[str, Any], entries: List[Dict[
         version_ok = first_gold in current
 
     exact_rank = family_rank = None
+    common = q.get(rc.COMMON_ANSWER) is True  # scored by record id alone: no exact tier
     if rule != "abstention":
         for e in entries:
-            if exact_rank is None and rc.matches_any(pool.norm_of(e["id"], e["text"]), const["variants"]):
+            if (not common and exact_rank is None
+                    and rc.matches_any(pool.norm_of(e["id"], e["text"]), const["variants"])):
                 exact_rank = e["rank"]
             if family_rank is None:
                 toks = pool.tokens_of(e["id"], e["text"])
                 if any(rc.token_overlap(gt, toks) >= rc.FAMILY_THRESHOLD for gt in const["gold_tokens"]):
                     family_rank = e["rank"]
-            if exact_rank is not None and family_rank is not None:
+            if (common or exact_rank is not None) and family_rank is not None:
                 break
 
-    headline_rank = None
-    if rule == "gold_any":
-        headline_rank = gold_rank
-    elif rule == "gold_all":
-        headline_rank = gold_all_rank
+    headline_rank = ranks["headline_rank"]
 
-    return {
+    out = {
         "id": q.get("id"),
         "question": q.get("question"),
         "category": q.get("category"),
@@ -391,6 +457,9 @@ def score_question(q: Dict[str, Any], const: Dict[str, Any], entries: List[Dict[
         "window": [{"rank": e["rank"], "id": e["id"], "gold": e["gold"], "score": e["score"],
                     "text": e["text"]} for e in entries],
     }
+    if common:
+        out[rc.COMMON_ANSWER] = True  # only where a question carries it, so other results keep their bytes
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -633,15 +702,16 @@ def _pct(hits: int, n: int) -> Optional[float]:
 def tier_table(ranks: List[Optional[int]], curve: Optional[List[float]], k_set: List[int],
                window: int) -> Dict[str, Any]:
     """Recall at each k, with chance, skill and validity beside it. With no chance
-    curve (pool size unknown, or a live pool whose texts the runner cannot see)
-    those three are None, never estimated."""
+    curve (pool size unknown, or a live pool whose texts the runner cannot see), or
+    no question to score (every one carries common_answer, in the exact tier), those
+    three are None, never estimated."""
     n = len(ranks)
     out = {"n": n, "recall": {}, "chance": {}, "skill": {}, "valid": {}}
     for k in k_set:
         hits = sum(1 for r in ranks if r is not None and r < k)
         obs = hits / n if n else 0.0
         out["recall"][str(k)] = _pct(hits, n)
-        if curve is None:
+        if curve is None or not n:
             out["chance"][str(k)] = out["skill"][str(k)] = out["valid"][str(k)] = None
             continue
         ch = rc.chance_at(curve, k)
@@ -740,8 +810,11 @@ def aggregate(run: Dict[str, Any], pool: Pool, band: Dict[str, Any]) -> Dict[str
     # which needs the gold texts) are file mode only.
     live = pool.live
     gold_curve = gold_chance_curve(answerable, pool.N)
+    # A question that carries common_answer is scored by record id alone: it is in the headline
+    # and the family tier and not in the exact tier (its answer is in records outside gold).
+    exact_rows = [r for r in answerable if not r.get(rc.COMMON_ANSWER)]
     exact_curve = None if live else rc.mean_chance_curve(
-        pool.N, [(r["G_exact"], "any") for r in answerable], k_max=window)
+        pool.N, [(r["G_exact"], "any") for r in exact_rows], k_max=window)
     family_curve = None if live else rc.mean_chance_curve(
         pool.N, [(r["G_family"], "any") for r in answerable], k_max=window)
 
@@ -765,14 +838,18 @@ def aggregate(run: Dict[str, Any], pool: Pool, band: Dict[str, Any]) -> Dict[str
     all_k = list(range(1, window + 1))
     curves = {
         "gold": tier_table([r["headline_rank"] for r in answerable], gold_curve, all_k, window),
-        "exact": tier_table([r["exact_rank"] for r in answerable], exact_curve, all_k, window),
+        "exact": tier_table([r["exact_rank"] for r in exact_rows], exact_curve, all_k, window),
         "family": None if live else tier_table([r["family_rank"] for r in answerable], family_curve, all_k, window),
     }
     diagnostics = {
         "note": "exact and family tiers are diagnostics, never the headline",
-        "exact": tier_table([r["exact_rank"] for r in answerable], exact_curve, k_set, window),
+        "exact": tier_table([r["exact_rank"] for r in exact_rows], exact_curve, k_set, window),
         "family": None if live else tier_table([r["family_rank"] for r in answerable], family_curve, k_set, window),
     }
+    if len(exact_rows) != len(answerable):
+        diagnostics["exact_note"] = (f"{len(answerable) - len(exact_rows)} of {len(answerable)} answerable questions "
+                                     "carry common_answer and are scored by record id alone: they are left out "
+                                     "of the exact tier")
     if live:
         diagnostics["family_note"] = ("not available in live mode: the family tier needs the gold texts, "
                                       "which the store does not hand the runner")
@@ -802,8 +879,9 @@ def aggregate(run: Dict[str, Any], pool: Pool, band: Dict[str, Any]) -> Dict[str
             if hk is None:
                 t["exact"] = t["family"] = None
             else:
-                t["exact"] = _pct(sum(1 for r in rows if r["exact_rank"] is not None and r["exact_rank"] < hk),
-                                  len(rows))
+                erows = [r for r in rows if not r.get(rc.COMMON_ANSWER)]
+                t["exact"] = _pct(sum(1 for r in erows if r["exact_rank"] is not None and r["exact_rank"] < hk),
+                                  len(erows))
                 t["family"] = None if live else _pct(
                     sum(1 for r in rows if r["family_rank"] is not None and r["family_rank"] < hk), len(rows))
             out[name] = t
@@ -856,7 +934,7 @@ def aggregate(run: Dict[str, Any], pool: Pool, band: Dict[str, Any]) -> Dict[str
     mc = run["memory_count"]
     pool_stats = {"N": pool.N, "answerable": len(answerable), "abstention": len(pq) - len(answerable),
                   "G": _g_stats(gold_g),
-                  "G_exact": {} if live else _g_stats([r["G_exact"] for r in answerable]),
+                  "G_exact": {} if live else _g_stats([r["G_exact"] for r in exact_rows]),
                   "G_family": {} if live else _g_stats([r["G_family"] for r in answerable]),
                   "drifted_gold_count": len(drifted), "memory_count": mc,
                   "store_amplification": round(mc / pool.N, 3) if mc is not None and mc >= 0 and pool.N else None,
@@ -900,7 +978,8 @@ def result_line(agg: Dict[str, Any], manifest: Dict[str, Any], verified: str, st
              f"N={'unknown' if n is None else n}"]
     if k is not None:
         parts.append(f"k={k}")
-    parts += [f"window={w}", f"qset={manifest['qset']['version']}@{manifest['qset']['sha256'][:8]}"]
+    parts += [f"window={w}", f"qset={manifest['qset']['version']}@{manifest['qset']['sha256'][:8]}",
+              f"writer={manifest['qset'].get('writer') or 'unknown'}"]
     if k is not None:
         parts += [f"gold@{k}={h['recall'][str(k)]}", f"skill@{k}={h['skill'][str(k)]}"]
         for kk in h["k_set"]:
@@ -912,6 +991,8 @@ def result_line(agg: Dict[str, Any], manifest: Dict[str, Any], verified: str, st
     parts.append(f"version={h['version_pct'] if h['version_n'] else 'n/a'}")
     if k is not None:
         parts.append(f"chance@{k}={h['chance'][str(k)]}")
+        floor = agg.get("floor")
+        parts.append(f"floor@{k}={floor['gold'].get(str(k)) if floor else 'n/a'}")
         parts.append(f"ceiling5={h['ceiling']['0.05']}")
     a = manifest["adapter"]
     parts.append(f"adapter={a['name']}@{a['version'].get('version', 'unknown')}")
@@ -946,7 +1027,7 @@ def _num(value: Any, width: int, places: int, suffix: str = "") -> str:
 
 
 def print_report(agg: Dict[str, Any], manifest: Dict[str, Any], verification: Dict[str, Any],
-                 standard: Dict[str, Any], line: str) -> None:
+                 standard: Dict[str, Any], line: str, ref_floor: Optional[Dict[str, Any]] = None) -> None:
     h, pool = agg["headline"], agg["pool"]
     a = manifest["adapter"]
     v = a["version"]
@@ -963,6 +1044,7 @@ def print_report(agg: Dict[str, Any], manifest: Dict[str, Any], verification: Di
         f"gates failed: {', '.join(q.get('failed_gates') or []) or 'unknown'}" if q.get("gates_passed") is False
         else "no question-set manifest")
     print(f"Question set: {q['version']}@{q['sha256'][:8]} ({q.get('status')}; {gates})")
+    print(f"Written by:   {q.get('writer') or 'unknown'}")
     if pool["N"] is None:
         print(f"Pool:         N unknown (the adapter has no list_ids()); window {h['window']}, gold at k "
               f"{h['k_set']}, no chance, skill or ceiling")
@@ -983,16 +1065,26 @@ def print_report(agg: Dict[str, Any], manifest: Dict[str, Any], verification: Di
     print(f"Questions:    {pool['answerable']} answerable, {pool['abstention']} abstention; "
           f"gold per question mean {g.get('mean')}, max {g.get('max')}")
 
+    floor = agg.get("floor")
     print(f"\nGold tier (headline), scored by record id")
-    print(f"  {'k':>4} {'gold':>8} {'chance':>9} {'skill':>7}")
+    print(f"  {'k':>4} {'gold':>8} {'chance':>9} {'skill':>7} {'floor':>8}")
     for k in h["k_set"]:
         ks = str(k)
         mark = "*" if k == h["k"] else " "
         flag = "  above ceiling" if h["valid"][ks] is False else ""
         print(f" {mark}{k:>4} {_num(h['recall'][ks], 8, 2, '%')} {_num(h['chance'][ks], 9, 3, '%')} "
-              f"{_num(h['skill'][ks], 7, 2)}{flag}")
+              f"{_num(h['skill'][ks], 7, 2)} {_num(floor['gold'].get(ks) if floor else None, 8, 2, '%')}{flag}")
     vtxt = (f"{h['version_ok']}/{h['version_n']} ({h['version_pct']}%)" if h["version_n"] else "n/a")
     print(f"  MRR@{h['window']}: {h['mrr']}   version tier: {vtxt}")
+    fk = h["k"] if h["k"] is not None else h["window"]
+    if floor:
+        print(f"  Floor: plain BM25 on this pool and these questions. This run is "
+              f"{_signed(h['lift'].get(str(fk)))} at k={fk}.")
+    else:
+        print("  Floor: not available in live mode, where the harness cannot see the pool's texts.")
+    if ref_floor:
+        print(f"  The set's reference.json gives plain BM25 gold@{ref_floor['k']}={ref_floor['gold']} "
+              f"on the N={ref_floor['N']} pool the set was built from.")
     if h["version_items"]:
         print(f"    {h['version_note']}")
     if h["ceiling"]["0.05"] is None:
@@ -1489,7 +1581,8 @@ def run_benchmark(
         "qset": {"version": qset["version"], "file": os.path.basename(questions_path), "sha256": qset["sha256"],
                  "manifest_sha256": qset.get("manifest_sha256"), "manifest_matches": qset["matches"],
                  "status": qset["status"], "gates_passed": qset["gates_passed"],
-                 "failed_gates": qset["failed_gates"]},
+                 "failed_gates": qset["failed_gates"], "writer": qset["writer"],
+                 "writer_record": qset["writer_record"]},
         "corpus": corpus_info,
         "distractors": None,
         "adapter": {"name": adapter_name, "module": cls.__module__, "class": cls.__name__,
@@ -1542,7 +1635,15 @@ def run_benchmark(
     if store_ids and first.get("text_only_hits"):
         result_notes.append(f"{first['text_only_hits']} hits came back as bare text, which the runner hashes to a content "
                      "id that never matches a store id; with --store-ids an adapter must return the ids it was given")
-    agg = dict(agg, extra_passes=extra, notes=result_notes)
+    # The floor: plain BM25 on this pool and these questions, run here and never read from a
+    # file (spec section 6). Live mode has no pool texts, so it has none.
+    floor = None if live else reference_floor(pool, questions, band)
+    if floor is not None:
+        h = dict(agg["headline"])
+        h["lift"] = {k: None if h["recall"].get(k) is None or v is None else round(h["recall"][k] - v, 2)
+                     for k, v in floor["gold"].items()}
+        agg = dict(agg, headline=h)
+    agg = dict(agg, extra_passes=extra, notes=result_notes, floor=floor)
     line = result_line(agg, manifest, verification["status"], standard["eligible"])
     result = {
         "recall": rc.SPEC_VERSION,
@@ -1556,7 +1657,8 @@ def run_benchmark(
         "timestamp": datetime.now().astimezone().isoformat(),
     }
     if not quiet:
-        print_report(agg, manifest, verification, standard, line)
+        print_report(agg, manifest, verification, standard, line,
+                     ref_floor=reference_json_floor(questions_path, qset))
 
     if output_path:
         os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)

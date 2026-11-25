@@ -79,10 +79,22 @@ _ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 # (--base-url) has no default model. OpenAI's and Google's calls always go to the official
 # endpoint below, whatever OPENAI_BASE_URL or GOOGLE_GEMINI_BASE_URL says; only --base-url
 # sends them anywhere else.
-PROVIDERS = ("anthropic", "openai", "google")
-DEFAULT_MODELS = {"anthropic": DEFAULT_MODEL, "openai": "gpt-6.2-sol", "google": "gemini-4-hydrogen"}
-OPENAI_URL = "https://api.openai.com/v1"
-GOOGLE_URL = "https://generativelanguage.googleapis.com/"
+PROVIDERS = ("anthropic", "openai", "google", "azure", "bedrock")
+# Azure has no default: --model names a deployment, which only its owner knows.
+DEFAULT_MODELS = {"anthropic": DEFAULT_MODEL, "openai": "gpt-6.2-sol", "google": "gemini-4-hydrogen",
+                  "bedrock": "anthropic." + DEFAULT_MODEL}
+# Azure OpenAI: an Azure resource's v1 API (https://NAME.openai.azure.com/openai/v1), which takes
+# OpenAI's own request through OpenAI's own client. Its key comes from AZURE_KEY_ENV unless
+# --api-key-env names another variable, and goes only to an Azure host, over https.
+AZURE_HOSTS = (".openai.azure.com", ".services.ai.azure.com", ".cognitiveservices.azure.com")
+AZURE_KEY_ENV = "AZURE_OPENAI_API_KEY"
+# Amazon Bedrock: Claude through the anthropic SDK's Bedrock client, which sends a Bedrock API
+# key (--api-key-env's, else AWS_BEARER_TOKEN_BEDROCK's) or signs each call with your AWS
+# credentials, to this address in the run's region.
+BEDROCK_URL = "https://bedrock-mantle.{region}.api.aws/anthropic"
+_AWS_REGION = re.compile(r"^[a-z]{2}(-[a-z]+)+-\d{1,2}$")
+OPENAI_URL = rc.OPENAI_URL  # the providers' own addresses live in recall_common, which the runner shares
+GOOGLE_URL = rc.GOOGLE_URL
 # OpenAI's and Google's reasoning tokens count against the output cap, and OpenAI's
 # reasoning guide advises room for them; 32,000 also stays under the 32,768 tokens a
 # single Gemini call returns. EFFORT ("high") is sent as reasoning_effort to OpenAI and as
@@ -94,8 +106,11 @@ REASONING_MAX_TOKENS = 32000
 # One table for both generators (generate_pool.py reads it from here). Used only for the
 # estimate printed before a run, the --max-cost guard and the cost a manifest reports; a
 # model not listed gets token counts alone, unless --price-in and --price-out give its prices.
-# - Anthropic, first-party prices as of October 2026: the writes are the 5-minute and the
-#   1-hour cache (the question builder writes the 1-hour one).
+# - Anthropic, first-party prices as of November 22, 2026: the writes are the 5-minute and
+#   the 1-hour cache (the question builder writes the 1-hour one). Cache reads are 0.05 times
+#   input on Sonnet 5.5 and Opus 5.5 and 0.025 times on Fable 5.2. Haiku 5.5's prices are for
+#   prompts up to 100,000 tokens, five times these above that; the builder's prompts are far
+#   smaller.
 # - OpenAI, standard prices for prompts up to 272,000 tokens as of November 21, 2026: the
 #   write is the default 30-minute cache, at 1.25 times input (both write columns; the
 #   question builder never asks for the 12-hour one).
@@ -103,9 +118,11 @@ REASONING_MAX_TOKENS = 32000
 #   prices they move to on December 1, 2026. Gemini caches implicitly with no write charge,
 #   so both write columns are the input price; thinking tokens are billed as output.
 PRICES = {
-    "claude-sonnet-5-5": (2.00, 10.00, 2.50, 4.00, 0.20),
+    "claude-haiku-5-5": (0.10, 0.50, 0.125, 0.20, 0.01),
+    "claude-sonnet-5-5": (2.00, 10.00, 2.50, 4.00, 0.10),
     "claude-opus-5-5": (4.00, 20.00, 5.00, 8.00, 0.20),
     "claude-fable-5-1": (10.00, 50.00, 12.50, 20.00, 0.25),
+    "claude-fable-5-2": (8.00, 40.00, 10.00, 16.00, 0.20),
     "gpt-6.2-astra": (8.00, 40.00, 10.00, 10.00, 0.40),
     "gpt-6.2-sol": (2.00, 10.00, 2.50, 2.50, 0.10),
     "gpt-6.1-terra": (1.00, 5.00, 1.25, 1.25, 0.05),
@@ -116,7 +133,7 @@ PRICES = {
     "gemini-4-hydrogen": (1.50, 7.50, 1.50, 1.50, 0.075),
     "gemini-3.5-flash-lite": (0.30, 2.50, 0.30, 0.30, 0.03),
 }
-PRICES_AS_OF = {"anthropic": "2026-10", "openai": "2026-11-21", "google": "2026-11-21"}
+PRICES_AS_OF = {"anthropic": "2026-11-22", "openai": "2026-11-21", "google": "2026-11-21"}
 # For --estimate only (docs/generation.md section 16). Characters per input token, measured
 # over pool v1's 1,090 recorded calls (2.36; the request is JSON lines like this one's).
 EST_CHARS_PER_TOKEN = 2.3
@@ -1065,6 +1082,42 @@ class AnthropicModel:
         return resp.model
 
 
+class BedrockModel(AnthropicModel):
+    """Claude on Amazon Bedrock: AnthropicModel's request, unchanged, through the anthropic
+    SDK's Bedrock client (AnthropicBedrockMantle) to BEDROCK_URL in the run's region, the
+    address ModelChoice recorded. The client sends a Bedrock API key, from the one variable
+    --api-key-env names or else from AWS_BEARER_TOKEN_BEDROCK (or ANTHROPIC_AWS_API_KEY), which
+    the SDK reads itself; without one, it signs each call with your AWS credentials as the AWS
+    tools find them (the environment's keys, a profile), which needs the SDK's bedrock extra.
+    The key or the credentials are never printed, logged or written."""
+
+    def __init__(self, choice: ModelChoice):
+        super().__init__(choice.model_id, choice.api_key_env)
+        self.choice = choice
+
+    def _connect(self) -> None:
+        try:
+            import anthropic
+        except ImportError:
+            raise GenerateError('a live run on Bedrock needs the anthropic package with its AWS extra: pip install '
+                                '"parsica-recall[bedrock]" (the tests and --replay do not)')
+        if not hasattr(anthropic, "AnthropicBedrockMantle"):
+            raise GenerateError('this anthropic package has no Bedrock client; upgrade it: pip install -U '
+                                '"parsica-recall[bedrock]"')
+        self._anthropic = anthropic
+        self._sdk = f"anthropic {getattr(anthropic, '__version__', 'unknown')}"
+        kwargs: Dict[str, Any] = {"aws_region": self.choice.region, "base_url": self.choice.endpoint}
+        if self.api_key_env is not None:
+            self._key = _key_from_env(self.api_key_env)
+            kwargs["api_key"] = self._key
+        try:
+            self._client = anthropic.AnthropicBedrockMantle(**kwargs)
+        except Exception as exc:  # no AWS credentials it can find, most often
+            raise GenerateError(self._scrub(f"could not create the Bedrock client ({type(exc).__name__}: {exc}); check "
+                                            "the AWS credentials and the region, or name a Bedrock API key's "
+                                            "variable with --api-key-env")) from None
+
+
 def _provider_of(model_id: str) -> Optional[str]:
     """The provider a model's name belongs to, when the name says so."""
     if model_id.startswith("claude-"):
@@ -1095,6 +1148,21 @@ def _check_base_url(url: str, with_key: bool) -> str:
     return text.rstrip("/")
 
 
+def _check_azure_url(url: str) -> str:
+    """--base-url with --provider azure: the v1 address of an Azure resource, over https, on
+    an Azure host, so the key it is sent can go nowhere else."""
+    text = _check_base_url(url, with_key=True)
+    parts = urllib.parse.urlsplit(text)
+    host = (parts.hostname or "").lower()
+    if parts.scheme != "https" or not host.endswith(AZURE_HOSTS):
+        raise GenerateError("--provider azure takes your Azure resource's v1 address in --base-url, over https on an "
+                            "Azure host, such as https://NAME.openai.azure.com/openai/v1")
+    if not parts.path.rstrip("/").endswith("/openai/v1"):
+        raise GenerateError("--base-url for Azure ends in /openai/v1, the v1 API, which takes OpenAI's own requests "
+                            "(such as https://NAME.openai.azure.com/openai/v1)")
+    return text
+
+
 class ModelChoice:
     """Which model writes the questions and where its calls go, checked once before
     anything is written: the provider, the model, the endpoint, the variable the key is
@@ -1106,25 +1174,49 @@ class ModelChoice:
     official endpoints with reasoning at EFFORT and REASONING_MAX_TOKENS, priced from
     PRICES. An endpoint of your own (--base-url, provider openai) is sent neither field
     unless --max-output-tokens sets the cap, and is priced only by --price-in and
-    --price-out."""
+    --price-out. Azure (provider azure, --base-url your resource's v1 address, --model a
+    deployment) is sent OpenAI's own request, and Bedrock (provider bedrock, a region)
+    Anthropic's; both are priced only by --price-in and --price-out, since each platform
+    sets its own prices by deployment and region."""
 
     def __init__(self, provider: str = "anthropic", model_id: Optional[str] = None, base_url: Optional[str] = None,
                  api_key_env: Optional[str] = None, price_in: Optional[float] = None,
-                 price_out: Optional[float] = None, max_output_tokens: Optional[int] = None):
+                 price_out: Optional[float] = None, max_output_tokens: Optional[int] = None,
+                 aws_region: Optional[str] = None):
         if provider not in PROVIDERS:
             raise GenerateError(f"--provider takes one of {', '.join(PROVIDERS)}, not {provider!r}")
         _check_env_name(api_key_env)
         if base_url is not None:
-            if provider != "openai":
-                raise GenerateError("--base-url goes with --provider openai: it names an endpoint that speaks "
-                                    "OpenAI's chat format")
-            base_url = _check_base_url(base_url, with_key=api_key_env is not None)
-            if not model_id:
-                raise GenerateError("--base-url needs --model, the name the endpoint knows the model by")
+            if provider not in ("openai", "azure"):
+                raise GenerateError("--base-url goes with --provider openai, for an endpoint that speaks OpenAI's chat "
+                                    "format, or with --provider azure, for your Azure resource")
+            if provider == "azure":
+                base_url = _check_azure_url(base_url)
+                if not model_id:
+                    raise GenerateError("--provider azure needs --model, the name of your deployment")
+            else:
+                base_url = _check_base_url(base_url, with_key=api_key_env is not None)
+                if not model_id:
+                    raise GenerateError("--base-url needs --model, the name the endpoint knows the model by")
+        elif provider == "azure":
+            raise GenerateError("--provider azure needs --base-url, your Azure resource's v1 address (such as "
+                                "https://NAME.openai.azure.com/openai/v1), and --model, the name of your deployment")
+        if aws_region is not None and provider != "bedrock":
+            raise GenerateError("--aws-region goes with --provider bedrock")
+        region = None
+        if provider == "bedrock":
+            region = aws_region or os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION")
+            if not region:
+                raise GenerateError("--provider bedrock needs a region: --aws-region, such as us-east-1, or AWS_REGION "
+                                    "in the environment")
+            if not _AWS_REGION.match(region):
+                raise GenerateError(f"--aws-region takes an AWS region's name, such as us-east-1, not {region!r}")
+        custom = provider == "openai" and base_url is not None
         if max_output_tokens is not None:
-            if base_url is None:
-                raise GenerateError(f"--max-output-tokens goes with --base-url; the official endpoints get {MAX_TOKENS} "
-                                    f"(Anthropic) or {REASONING_MAX_TOKENS} (OpenAI and Google)")
+            if not custom:
+                raise GenerateError(f"--max-output-tokens goes with --base-url on --provider openai; the providers' own "
+                                    f"endpoints get {MAX_TOKENS} (Anthropic, Bedrock) or {REASONING_MAX_TOKENS} "
+                                    "(OpenAI, Google, Azure)")
             if max_output_tokens < 1:
                 raise GenerateError("--max-output-tokens takes a whole number of tokens, 1 or more")
         if (price_in is None) != (price_out is None):
@@ -1137,15 +1229,22 @@ class ModelChoice:
         self.model_id = model_id or DEFAULT_MODELS[provider]
         self.api_key_env = api_key_env
         self.base_url = base_url
-        self.custom = base_url is not None
-        if not self.custom:
+        self.custom = custom
+        self.region = region
+        if provider in ("anthropic", "openai", "google") and not custom:
+            # Azure's models are deployments and Bedrock's carry Bedrock's own ids, so only the
+            # providers' own endpoints check that a model's name is theirs.
             owner = _provider_of(self.model_id)
             if owner is not None and owner != provider:
                 raise GenerateError(f"{self.model_id} is a model of {owner}'s; run it with --provider {owner}")
         if provider == "anthropic":
             self.endpoint, self.max_tokens, self.effort = None, MAX_TOKENS, EFFORT
-        elif self.custom:
+        elif custom:
             self.endpoint, self.max_tokens, self.effort = base_url, max_output_tokens, None
+        elif provider == "azure":
+            self.endpoint, self.max_tokens, self.effort = base_url, REASONING_MAX_TOKENS, EFFORT
+        elif provider == "bedrock":
+            self.endpoint, self.max_tokens, self.effort = BEDROCK_URL.format(region=region), MAX_TOKENS, EFFORT
         else:
             self.endpoint = OPENAI_URL if provider == "openai" else GOOGLE_URL
             self.max_tokens, self.effort = REASONING_MAX_TOKENS, EFFORT
@@ -1153,11 +1252,18 @@ class ModelChoice:
         if self.flag_price:
             self.price: Optional[Tuple[float, ...]] = (price_in, price_out, price_in, price_in, price_in)
             self.price_source: Optional[str] = "--price-in and --price-out (cache reads and writes at the input price)"
-        elif self.custom:
+        elif custom or provider in ("azure", "bedrock"):
             self.price, self.price_source = None, None
         else:
             self.price = PRICES.get(self.model_id)
             self.price_source = f"the price table as of {PRICES_AS_OF[provider]}" if self.price else None
+
+    @property
+    def claude_request(self) -> bool:
+        """Anthropic's request shape: Anthropic's API itself, or Claude on Bedrock. Such a
+        request marks its system prompt for the cache, and its tokens are counted as the
+        estimate's guesses were measured."""
+        return self.provider in ("anthropic", "bedrock")
 
     @property
     def other(self) -> bool:
@@ -1211,11 +1317,23 @@ class OpenAIModel:
         try:
             import openai
         except ImportError:
-            raise GenerateError('a live run on OpenAI needs the openai package: pip install "parsica-recall[openai]" '
-                                "(the tests and --replay do not)")
+            raise GenerateError('a live run on OpenAI or Azure needs the openai package: pip install '
+                                '"parsica-recall[openai]" (the tests and --replay do not)')
         self._openai = openai
         self._sdk = f"openai {getattr(openai, '__version__', 'unknown')}"
         c = self.choice
+        if c.provider == "azure":
+            # Azure's v1 API takes OpenAI's own client. The key goes in both headers Azure
+            # reads (api-key, and the bearer token the client sends), to the resource's
+            # address only, which ModelChoice has already held to https and an Azure host.
+            self._key = _key_from_env(c.api_key_env or AZURE_KEY_ENV)
+            try:
+                self._client = openai.OpenAI(base_url=c.base_url, api_key=self._key, max_retries=2,
+                                             default_headers={"api-key": self._key})
+            except Exception as exc:
+                raise GenerateError(self._scrub(f"could not create the client for Azure ({type(exc).__name__}: "
+                                                f"{exc})")) from None
+            return
         if c.api_key_env is not None:
             self._key = _key_from_env(c.api_key_env)
         kwargs: Dict[str, Any] = {"base_url": c.base_url or OPENAI_URL, "max_retries": 2}
@@ -1413,11 +1531,14 @@ class GoogleModel:
 
 
 def make_model(choice: ModelChoice) -> Any:
-    """The live model for a choice: the Anthropic, OpenAI or Google adapter."""
-    if choice.provider == "openai":
+    """The live model for a choice: the Anthropic, OpenAI (OpenAI and Azure), Google or
+    Bedrock adapter."""
+    if choice.provider in ("openai", "azure"):
         return OpenAIModel(choice)
     if choice.provider == "google":
         return GoogleModel(choice)
+    if choice.provider == "bedrock":
+        return BedrockModel(choice)
     return AnthropicModel(choice.model_id, choice.api_key_env)
 
 
@@ -1558,17 +1679,225 @@ def record_json(rec: Dict[str, Any]) -> str:
     return json.dumps(out, ensure_ascii=False)
 
 
-def user_message(category: str, batch: Sequence[Tuple[str, ...]], corpus: Corpus) -> str:
-    """The user message for one call: one record per line, or labeled pairs."""
+# Voices (November 23, 2026). With --people, each unit's question is asked in a seeded voice
+# and shape, written on an ASK line just before the unit, with the first name of the person
+# whose record it is; prompts written for it read that line. Without --people
+# none of this runs, and every request is what it was before, byte for byte.
+ASK_HEAD = "ASK "
+VOICES = (("person", 1), ("assistant", 1))
+SHAPES = (("plain", 8), ("casual", 5), ("request", 3), ("terse", 4))
+# Role words in a question, which the voices replace with a person or a pronoun.
+_ROLE_WORDS = re.compile(r"\bthe\s+(?:user|assistant|agent|ai|individual)\b", re.I)
+# The owner asks (November 23, 2026). With --owner beside --people, the store is treated as
+# having an owner, the person whose records a unit holds, and every question is that owner's
+# own message to their assistant. The ASK line then gives the owner's first name, so the
+# writer knows who "I" is, and a seeded shape; prompts written for it read it.
+# A question that names its owner is dropped, as one that names a role is; a topic shows only
+# its owner's records; and every candidate records how it was asked ("ask"), so a set can be
+# scored against its owner's records alone, questions with no gold record included.
+OWNER_SHAPES = (("plain", 6), ("casual", 6), ("request", 3), ("fragment", 3), ("thinking", 2))
+# --forms: beside its shape, each unit's question gets a form, the kind of question the
+# owner asks, and one unit in LONG_ONE_IN is asked as a long message. Both come from streams of their
+# own, so a unit keeps the shape --owner gives it unless it becomes long. Abstention is always "open".
+OWNER_FORMS = (("open", 7), ("how", 4), ("when", 3), ("choice", 2), ("two-part", 4))
+LONG_ONE_IN = 10
+LONG_MAX_WORDS = 80
+TWO_PART_MAX_WORDS = 35
+# --form-scheme 2 (prompts/v7, November 24, 2026), from a read of trial sets drawn by the first scheme.
+# The choice form is drawn less often (about 7.5% of units overall), and the side its right answer goes
+# on is drawn too and written on the ASK line ("right": "first" or "second"): in those sets the right
+# answer came first in 93% of choice questions, and second, after the old value, in every one about
+# something that changed, so its place gave it away. The when form goes only to a unit whose shown
+# records hold a time, a date, a day or a length of time, and to every temporal_awareness unit, whose
+# questions ask when a thing was said; in those sets most when questions fell back to another kind, for
+# want of a time to ask about.
+# It weighs more where it may go (OWNER_FORMS_2), so it keeps about its share overall on pool v1.
+FORM_SCHEMES = (1, 2, 3)
+OWNER_FORMS_2 = (("open", 15), ("how", 8), ("when", 9), ("choice", 3), ("two-part", 8))
+CHOICE_SIDES = ("first", "second")
+# --form-scheme 3 (prompts/v7, November 24, 2026): scheme 2, with the when form kept to the categories
+# whose answer can be a time. In a trial run of scheme 2 the draw gave the when form only to
+# entity_attribution and vocabulary_gap units, whose answers are a name or a term, and none of the 15 when
+# questions asked about a time, though every record held one. So under scheme 3 the when form goes only
+# to a unit of WHEN_CATEGORIES whose shown records hold a time (temporal_awareness always), and weighs
+# more there (OWNER_FORMS_3), so it keeps about its share on pool v1. Everything else is scheme 2.
+OWNER_FORMS_3 = (("open", 15), ("how", 8), ("when", 15), ("choice", 3), ("two-part", 8))
+WHEN_CATEGORIES = ("direct_recall_user", "direct_recall_agent", "temporal_awareness", "paraphrase_recall",
+                   "cross_session", "long_horizon", "knowledge_update", "correction_handling")
+_MONTHS = (r"(?:january|february|march|april|may|june|july|august|september|october|november|december"
+           r"|jan|feb|mar|apr|jun|jul|aug|sept?|oct|nov|dec)")
+_TIME_IN_TEXT = re.compile(
+    r"\b(?:[01]?\d|2[0-3]):[0-5]\d\b|\b\d{1,2}\s*(?:am|pm|a\.m\.|p\.m\.)(?![a-z])|\b(?:noon|midnight)\b"
+    rf"|\b\d{{1,2}}(?:st|nd|rd|th)?\s+{_MONTHS}\b|\b{_MONTHS}\.?\s+\d{{1,2}}(?:st|nd|rd|th)?\b"
+    rf"|\b{_MONTHS}\s+\d{{4}}\b|\b\d{{4}}-\d{{2}}-\d{{2}}\b"
+    r"|\b\d{1,2}/\d{1,2}/(?:\d{4}|\d{2})\b|\b\d{4}/\d{1,2}/\d{1,2}\b"
+    r"|\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)s?\b"
+    r"|\b(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|fifteen|twenty|thirty|forty"
+    r"|sixty|ninety|half an?)\s*-?\s*(?:seconds?|secs?|minutes?|mins?|hours?|hrs?|days?|weeks?|months?"
+    r"|years?)\b",
+    re.I)
+
+
+def has_time(text: str) -> bool:
+    """Whether a record's text holds a time of day, a date, a day of the week or a length of time:
+    something a when question can ask about (--form-scheme 2). A clock time has to be one (23:59 is,
+    99:99 is not); a date written with slashes needs its year, since 1/2 or 3/4 is as often a fraction.
+    The record's own timestamp does not count, and neither do words such as "yesterday", which only
+    the timestamp could place."""
+    return bool(_TIME_IN_TEXT.search(text or ""))
+
+
+def _weighted_name(rng: random.Random, pairs: Sequence[Tuple[str, int]]) -> str:
+    """One name drawn by integer weights, in integer arithmetic, the same on every platform."""
+    r = rng.randrange(sum(w for _, w in pairs))
+    for name, w in pairs:
+        if r < w:
+            return name
+        r -= w
+    raise AssertionError("unreachable")
+
+
+class Voices:
+    """Who asks each unit's question and how. people maps a record's source, or the part of
+    it before the first '-' (a pool's persona, p1 to p8 in pool v1), or '*' for every record,
+    to a first name. The voice and the shape are drawn from the seed, the category and the
+    unit, so the same unit is always asked the same way."""
+
+    def __init__(self, seed: int, people: Dict[str, str], sha256: Optional[str] = None, owner: bool = False,
+                 forms: bool = False, force_form: Optional[str] = None, form_scheme: int = 1):
+        self.seed = seed
+        self.people = dict(people)
+        self.sha256 = sha256
+        self.owner = owner  # every question is its owner's own message (--owner)
+        self.forms = forms  # and each one also gets a form, and now and then the long shape (--forms)
+        self.force_form = force_form  # every unit but abstention gets this form (--force-form)
+        self.form_scheme = form_scheme  # 2 and 3: the weights, the choice side and the when rule of prompts/v7
+
+    def timed(self, category: str, unit: Sequence[str], corpus: "Corpus") -> bool:
+        """Whether the when form may go to this unit: a temporal_awareness unit always, any other when
+        a record the writer is shown holds a time (has_time); under --form-scheme 3 only in
+        WHEN_CATEGORIES, whose answer can be a time."""
+        if category == "temporal_awareness":
+            return True
+        if self.form_scheme == 3 and category not in WHEN_CATEGORIES:
+            return False
+        return any(has_time(str(corpus.by_id[rid].get("text") or "")) for rid in self.owned(unit, corpus))
+
+    def _form(self, category: str, unit: Sequence[str], corpus: "Corpus", key: str) -> str:
+        if self.force_form:
+            return self.force_form
+        if self.form_scheme in (2, 3):
+            weights, stream = (OWNER_FORMS_3, "form3") if self.form_scheme == 3 else (OWNER_FORMS_2, "form2")
+            pairs = (weights if self.timed(category, unit, corpus)
+                     else tuple(p for p in weights if p[0] != "when"))
+            return _weighted_name(random.Random(f"recall/1.0 {stream}|{key}"), pairs)
+        return _weighted_name(random.Random(f"recall/1.0 form|{key}"), OWNER_FORMS)
+
+    def key_of(self, record: Dict[str, Any]) -> Optional[str]:
+        """The people file's key a record falls under: its source, the part of it before the
+        first '-', or '*'. Records under one key have one owner."""
+        src = str(record.get("source") or "")
+        return next((key for key in (src, src.split("-", 1)[0], "*") if self.people.get(key)), None)
+
+    def person_of(self, record: Dict[str, Any]) -> Optional[str]:
+        src = str(record.get("source") or "")
+        return self.people.get(src) or self.people.get(src.split("-", 1)[0]) or self.people.get("*")
+
+    def ask(self, category: str, unit: Sequence[str], corpus: "Corpus") -> Dict[str, str]:
+        if self.owner:
+            rng = random.Random(f"recall/1.0 owner|{self.seed}|{category}|{'+'.join(unit)}")
+            out = {"shape": _weighted_name(rng, OWNER_SHAPES)}
+            if self.forms:
+                key = f"{self.seed}|{category}|{'+'.join(unit)}"
+                out["form"] = "open" if category == "abstention" else self._form(category, unit, corpus, key)
+                if self.form_scheme in (2, 3) and out["form"] == "choice":
+                    out["right"] = CHOICE_SIDES[random.Random(f"recall/1.0 right|{key}").randrange(len(CHOICE_SIDES))]
+                if random.Random(f"recall/1.0 long|{key}").randrange(LONG_ONE_IN) == 0:
+                    out["shape"] = "long"
+            name = self.person_of(corpus.by_id[unit[0]])
+            if name:
+                out["owner"] = name
+            return out
+        rng = random.Random(f"recall/1.0 voices|{self.seed}|{category}|{'+'.join(unit)}")
+        out = {"voice": _weighted_name(rng, VOICES), "shape": _weighted_name(rng, SHAPES)}
+        name = self.person_of(corpus.by_id[unit[0]])
+        if name:
+            out["person"] = name
+        return out
+
+    def owned(self, unit: Sequence[str], corpus: "Corpus") -> List[str]:
+        """The unit's records that belong to its owner, the person of its first record. A
+        record or a pair has one owner; a topic can gather records of several."""
+        key = self.key_of(corpus.by_id[unit[0]])
+        return [rid for rid in unit if self.key_of(corpus.by_id[rid]) == key]
+
+    def record(self, category: str, unit: Sequence[str], corpus: "Corpus") -> Dict[str, Any]:
+        """What a candidate keeps of how it was asked: the ASK line's fields and the people
+        file's key of its owner."""
+        return dict(self.ask(category, unit, corpus), key=self.key_of(corpus.by_id[unit[0]]))
+
+    def describe(self) -> Dict[str, Any]:
+        if self.owner and self.forms:
+            out = {"people_sha256": self.sha256, "asker": "owner", "shapes": dict(OWNER_SHAPES),
+                   "forms": dict(OWNER_FORMS), "long": f"1 in {LONG_ONE_IN}"}
+            if self.form_scheme == 2:
+                out.update(form_scheme=2, forms=dict(OWNER_FORMS_2), choice_right=list(CHOICE_SIDES),
+                           when="only where a shown record holds a time, a date, a day or a length of time, "
+                                "and in temporal_awareness")
+            elif self.form_scheme == 3:
+                out.update(form_scheme=3, forms=dict(OWNER_FORMS_3), choice_right=list(CHOICE_SIDES),
+                           when="only in " + ", ".join(WHEN_CATEGORIES) + ", where a shown record holds a time, "
+                                "a date, a day or a length of time (temporal_awareness always)")
+            if self.force_form:
+                out["form_forced"] = self.force_form
+            return out
+        if self.owner:
+            return {"people_sha256": self.sha256, "asker": "owner", "shapes": dict(OWNER_SHAPES)}
+        return {"people_sha256": self.sha256, "voices": dict(VOICES), "shapes": dict(SHAPES)}
+
+
+def read_people(path: str) -> Dict[str, str]:
+    """--people: a JSON object from a source (or a source's prefix, or '*') to a first name. A
+    name goes to the model on every ASK line and into the call log, so it passes the same screen
+    as a record's fields: a value with the shape of a credential or of personal data (an email
+    address, a phone number and so on) is refused, and the error names its key, not the value."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            people = json.load(f)
+    except (OSError, ValueError) as exc:
+        raise GenerateError(f"--people: cannot read {path}: {exc}")
+    if (not isinstance(people, dict) or not people
+            or not all(isinstance(k, str) and k and isinstance(v, str) and v.strip() for k, v in people.items())):
+        raise GenerateError("--people takes a JSON object from sources (or a source's prefix, or '*') to first names")
+    for key, name in people.items():
+        if lv.scan_secrets_pii(name.strip()):
+            raise GenerateError(f"--people: the name for {key!r} has the shape of a credential or personal data; "
+                                "it would be sent to the model on every ASK line, so give a first name")
+    return {k: v.strip() for k, v in people.items()}
+
+
+def _ask_line(voices: Optional["Voices"], category: str, unit: Sequence[str], corpus: "Corpus") -> List[str]:
+    if voices is None:
+        return []
+    return [ASK_HEAD + json.dumps(voices.ask(category, unit, corpus), ensure_ascii=False, sort_keys=True)]
+
+
+def user_message(category: str, batch: Sequence[Tuple[str, ...]], corpus: Corpus,
+                 voices: Optional[Voices] = None) -> str:
+    """The user message for one call: one record per line, or labeled pairs. With voices,
+    an ASK line goes before each unit (a record, a pair or a topic's records). When the
+    owner asks, a topic shows only its owner's records."""
     lines = []
     if UNIT_KIND[category] == "pair":
         first, second = PAIR_LABELS[category]
         for i, (a, b) in enumerate(batch, 1):
-            lines += [f"PAIR {i}", f"{first}: {record_json(corpus.by_id[a])}",
-                      f"{second}: {record_json(corpus.by_id[b])}"]
+            lines += [f"PAIR {i}"] + _ask_line(voices, category, (a, b), corpus)
+            lines += [f"{first}: {record_json(corpus.by_id[a])}", f"{second}: {record_json(corpus.by_id[b])}"]
     else:
         for unit in batch:
-            lines += [record_json(corpus.by_id[rid]) for rid in unit]
+            lines += _ask_line(voices, category, unit, corpus)
+            shown = voices.owned(unit, corpus) if voices is not None and voices.owner else unit
+            lines += [record_json(corpus.by_id[rid]) for rid in shown]
     return "\n".join(lines)
 
 
@@ -1589,8 +1918,149 @@ def leaks(item: Dict[str, Any], gold: Sequence[str], corpus: Corpus) -> List[Tup
     return out
 
 
+COMMON_MODES = ("conversation", "owner")
+
+
+def source_of(record: Dict[str, Any]) -> str:
+    """A record's source as one string: the loader takes any JSON value there, and a list or
+    a number must still compare and hash."""
+    value = record.get("source")
+    if value is None:
+        return ""
+    return value if isinstance(value, str) else json.dumps(value, sort_keys=True, ensure_ascii=False)
+
+
+def gold_or_common(category: str, q: Dict[str, Any], corpus: Corpus, voices: Optional[Voices], mode: str,
+                   window: int, confirm: Optional[Callable[[str], Optional[bool]]] = None,
+                   eligible: Optional[set] = None) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
+    """--common-answers (docs/generation.md section 6): what an item the lint holds only for a
+    GOLD_MULTIPLICITY leak may become instead. Returns the question to lint again, or None
+    when it stays as it is, and what was found, for candidates.jsonl.
+
+    A record of a gold record's conversation (the same source) that holds the answer or an
+    alternate may say the fact again: the owner's turn, the assistant's reply and the note of
+    the session are one conversation. It may also only share the words ("the east cabinet's
+    hinges squeak" beside "the toolbox is in the east cabinet"), so each such record is put to
+    confirm, which asks the writer whether the record, on its own, gives the answer to the
+    question. Only a yes makes it gold, with its near copies. A record is put to the question
+    only when its whole near-copy cluster could have been shown (eligible: inside the gold
+    window and past the screen) and, when the owner asks, every member is that owner's; without
+    confirm nothing is promoted. This is not done for the categories whose gold is several
+    records by design (the version categories and cross_session), where a new gold record would
+    change what the question asks of a system.
+
+    Under mode "owner", an item whose answer is otherwise found only in other owners' records
+    is kept and carries common_answer: another person's record cannot be what the owner asks
+    about, so the question is sound by record id, and its answer text proves nothing. A record
+    of the same owner in another conversation may say the same fact again, and nothing here
+    can tell, so that item stays held, and so does one where a record's owner is not known."""
+    gold = list(q["gold_ids"])
+    held = set()
+    for value in [q["answer"]] + list(q["acceptable_answers"]):
+        held.update(corpus.ctx.index.matching(rc.normalize(value)))
+    others = [corpus.ids[i] for i in sorted(held) if corpus.ids[i] not in gold]
+    owned = voices is not None and voices.owner
+    mine = voices.key_of(corpus.by_id[gold[0]]) if voices is not None else None
+    sources = {source_of(corpus.by_id[g]) for g in gold} - {""}
+    grown: List[str] = []
+    checked: List[Dict[str, Any]] = []
+    if category != "abstention" and category not in rc.MULTI_RECORD_CATEGORIES:
+        asked = set()
+        for rid in others:
+            if source_of(corpus.by_id[rid]) not in sources:
+                continue
+            members = corpus.cluster[rid]
+            if members[0] in asked:
+                continue
+            asked.add(members[0])
+            if any(corpus.pos[m] >= window or (eligible is not None and m not in eligible) for m in members):
+                checked.append({"id": rid, "answers": None, "why": "not eligible to be shown"})
+                continue
+            if owned and (mine is None or any(voices.key_of(corpus.by_id[m]) != mine for m in members)):
+                checked.append({"id": rid, "answers": None, "why": "not the owner's record"})
+                continue
+            verdict = confirm(rid) if confirm is not None else None
+            checked.append({"id": rid, "answers": verdict})
+            if verdict is True:
+                grown += [m for m in members if m not in gold and m not in grown]
+    rest = [rid for rid in others if rid not in grown]
+    note: Dict[str, Any] = {"gold_added": grown, "checked": checked, "elsewhere": len(rest), "outcome": "held"}
+    q2 = None
+    if grown:
+        q2 = dict(q)
+        q2["gold_ids"] = gold + grown
+        q2["gold_hashes"] = {g: rc.text_hash(corpus.by_id[g]["text"]) for g in q2["gold_ids"]}
+    if not rest:
+        note["outcome"] = "gold" if grown else "held"
+        return q2, note
+    if mode != "owner" or voices is None:
+        return None, note
+    if mine is None or any(voices.key_of(corpus.by_id[rid]) is None for rid in rest):
+        note["outcome"] = "owner_unknown"  # nothing shows the other record is another person's
+        return None, note
+    same = sum(1 for rid in rest if voices.key_of(corpus.by_id[rid]) == mine)
+    note["same_owner"] = same
+    if same:
+        return None, note
+    q2 = dict(q2 or q)
+    q2[rc.COMMON_ANSWER] = True
+    note["outcome"] = rc.COMMON_ANSWER
+    return q2, note
+
+
+_CHOICE_NEAR = 8  # an option sits within this many words of its "or"
+_NOT_AN_OPTION = frozenset({"something", "anything", "not", "so", "else", "whatever", "what", "maybe"})
+
+
+def _holds(tokens: Sequence[str], phrase: Sequence[str]) -> bool:
+    n = len(phrase)
+    return n > 0 and any(list(tokens[i:i + n]) == list(phrase) for i in range(len(tokens) - n + 1))
+
+
+def choice_side(q: Dict[str, Any]) -> Optional[str]:
+    """Where a choice question offers its answer (--forms): "first" when the answer, or an
+    acceptable answer, is the option before an "or", "second" when it is the one after, and
+    None when the question offers no two options with the answer as one of them, so the
+    lint holds an answer written in the question as it always has. "cabinet xqad or something"
+    is not a choice: the other side has to be an option too."""
+    toks = rc.normalize(q["question"]).split()
+    variants = [rc.normalize(v).split() for v in [q["answer"]] + list(q.get("acceptable_answers") or [])]
+    for j, tok in enumerate(toks):
+        if tok != "or":
+            continue
+        left, right = toks[max(0, j - _CHOICE_NEAR):j], toks[j + 1:j + 1 + _CHOICE_NEAR]
+        if not left or not right or left[-1] in _NOT_AN_OPTION or right[0] in _NOT_AN_OPTION:
+            continue
+        for v in variants:
+            if _holds(left, v) and not _holds(right, v):
+                return "first"
+            if _holds(right, v) and not _holds(left, v):
+                return "second"
+    return None
+
+
+# The promotion check (--common-answers): one short call per record the conversation step would
+# make gold, recorded in calls.jsonl under this category, which is not a question category.
+CHECK_CATEGORY = "common_check"
+CHECK_PROMPT = os.path.join(PROMPTS_DIR, "checks", "common_answer.md")
+
+
+def check_message(q: Dict[str, Any], record: Dict[str, Any]) -> str:
+    """The user message of a promotion check: the question, its answer and the one record."""
+    return "\n".join(["QUESTION: " + q["question"], "ANSWER: " + q["answer"], "RECORD: " + record_json(record)])
+
+
+def check_verdict(text: str) -> bool:
+    """A check's reply as a verdict: yes only for exactly {"items": [{"answers": true}]}."""
+    try:
+        items = json.loads(text).get("items")
+    except (ValueError, AttributeError):
+        return False
+    return isinstance(items, list) and len(items) == 1 and isinstance(items[0], dict) and items[0].get("answers") is True
+
+
 def retry_message(category: str, item: Dict[str, Any], unit: Tuple[str, ...], corpus: Corpus,
-                  conflicts: Sequence[Tuple[str, str, int]]) -> str:
+                  conflicts: Sequence[Tuple[str, str, int]], voices: Optional[Voices] = None) -> str:
     """The user message of a GOLD_MULTIPLICITY retry (docs/generation.md section 6): the
     held item as the model returned it, the words that leak and how many other records
     hold them, then the unit exactly as it was first shown. No other record is shown."""
@@ -1598,7 +2068,7 @@ def retry_message(category: str, item: Dict[str, Any], unit: Tuple[str, ...], co
                     f"also appears in {n} other record{'s' if n != 1 else ''} of the store"
                     for field, value, n in conflicts)
     return "\n".join([RETRY_HEAD, "held: " + json.dumps(item, ensure_ascii=False), "why: " + why,
-                      user_message(category, [unit], corpus)])
+                      user_message(category, [unit], corpus, voices)])
 
 
 def parse_retry_message(text: str) -> Tuple[Dict[str, Any], str, List[Any]]:
@@ -1611,8 +2081,8 @@ def parse_retry_message(text: str) -> Tuple[Dict[str, Any], str, List[Any]]:
 def parse_user_message(text: str) -> List[Any]:
     """The inverse of user_message, for tests and audits: a list of records, or of
     (first, second) record pairs for a pair message. A retry message gives the unit it
-    shows again."""
-    lines = text.split("\n")
+    shows again. ASK lines (voices) are left out."""
+    lines = [line for line in text.split("\n") if not line.startswith(ASK_HEAD)]
     if lines and lines[0] == RETRY_HEAD:
         lines = lines[3:]
     if lines and lines[0].startswith("PAIR "):
@@ -1702,20 +2172,41 @@ def has_unit(value: str, unit_terms: Sequence[str]) -> bool:
     return any(u.lower() in low for u in unit_terms) or bool(_TIME_UNIT.search(low))
 
 
-def rule_checks(category: str, item: Dict[str, Any], unit: Tuple[str, ...], corpus: Corpus) -> Optional[str]:
+def rule_checks(category: str, item: Dict[str, Any], unit: Tuple[str, ...], corpus: Corpus,
+                roles: bool = False, owner: Optional[str] = None, ask: Optional[Dict[str, Any]] = None
+                ) -> Optional[str]:
     """The prompts' own rules that a machine can check (section 6): the question's shape
     and length, one question per item, the answer's length, a number's unit kept by every
-    alternate, and in the pair categories where the answer may sit. Returns the reason an
-    item is dropped, or None."""
+    alternate, and in the pair categories where the answer may sit. With roles (a run with
+    voices), a question that names a role ("the user", "the assistant") is dropped too, and
+    with owner (the owner's first name, when the owner asks) one that names its owner. With
+    ask (--forms), a long message may run to LONG_MAX_WORDS with its question mark anywhere in it,
+    and a two-part message to TWO_PART_MAX_WORDS with a question mark at the end of each part;
+    both may join a second question to the first.
+    Returns the reason an item is dropped, or None."""
     question = item["question"].strip()
-    if not question.endswith(_QUESTION_MARKS):
+    shape, form = (ask or {}).get("shape"), (ask or {}).get("form")
+    long_message, two_part = shape == "long", form == "two-part"
+    marks = sum(question.count(m) for m in _QUESTION_MARKS)
+    if long_message and not marks:
+        return "the message holds no question mark"
+    if not long_message and not question.endswith(_QUESTION_MARKS):
         return "the question does not end in a question mark"
-    if len(question.split()) > QUESTION_MAX_WORDS:
-        return f"the question is longer than {QUESTION_MAX_WORDS} words"
-    if sum(question.count(m) for m in _QUESTION_MARKS) > 1:
+    if roles:
+        role = _ROLE_WORDS.search(question)
+        if role:
+            return f"the question names a role ({role.group(0).lower()!r}) instead of a person or a pronoun"
+    if owner and re.search(rf"(?<![\w-]){re.escape(owner)}(?![\w-])", question, re.I):
+        return f"the question names its owner ({owner!r}), who asks as I"
+    most = LONG_MAX_WORDS if long_message else TWO_PART_MAX_WORDS if two_part else QUESTION_MAX_WORDS
+    if len(question.split()) > most:
+        return f"the question is longer than {most} words"
+    if not (long_message or two_part) and marks > 1:  # worded as before --forms, so earlier sets replay byte for byte
         return "two questions in one: the item holds more than one question mark"
+    if marks > 2:
+        return f"the message holds {marks} question marks"
     second = _SECOND_QUESTION.search(question)
-    if second:
+    if second and not (long_message or two_part):
         return f"two questions in one: the question goes on with {second.group(0).lower()!r}"
     if category == "abstention":
         return None  # its values are screened instead
@@ -1813,19 +2304,21 @@ def answer_type(category: str, answer: str, spec: Dict[str, Any]) -> str:
 
 
 def assemble(category: str, item: Dict[str, Any], unit: Tuple[str, ...], corpus: Corpus, spec: Dict[str, Any],
-             cand_id: str) -> Dict[str, Any]:
+             cand_id: str, keep: Optional[Callable[[str], bool]] = None) -> Dict[str, Any]:
     """The question as it would freeze, in the lint spec's field order. Gold grows to
     each shown record's near copies, by the rule fixed before any call; difficulty is a
-    placeholder until the freeze ranks it."""
+    placeholder until the freeze ranks it. keep, when the owner asks, takes only the near
+    copies that are the owner's: the same words in another person's records are not the
+    owner's memory."""
     if category == "abstention":
         answer, alts, gold, current, atype = ABSTENTION_ANSWER, list(ABSTENTION_ALTERNATES), [], None, "abstention"
     else:
         gold = []
         for g in item["gold_ids"]:
-            gold += [m for m in corpus.cluster[g] if m not in gold]
+            gold += [m for m in corpus.cluster[g] if m not in gold and (keep is None or m == g or keep(m))]
         current = None
         if category in rc.VERSION_CATEGORIES:
-            copies = corpus.cluster[unit[1]]
+            copies = [m for m in corpus.cluster[unit[1]] if keep is None or m == unit[1] or keep(m)]
             current = copies[0] if len(copies) == 1 else list(copies)
         answer, alts = item["answer"], list(item["acceptable_answers"])
         atype = answer_type(category, answer, spec)
@@ -1875,6 +2368,10 @@ def _run_reference(q_path: str, c_path: str, store_ids: bool) -> Tuple[Dict[str,
                 "records_hash": res["manifest"]["records_hash"], "gold": h["recall"], "skill": h["skill"],
                 "chance": h["chance"], "mrr": h["mrr"], "version_pct": h["version_pct"],
                 "exact": res["diagnostics"]["exact"]["recall"], "family": res["diagnostics"]["family"]["recall"],
+                # Per category and per difficulty: n and gold at each k, so a reader sees where
+                # the floor sits inside the set, not only its average.
+                "by_category": {c: {"n": t["n"], "gold": t["gold"]} for c, t in res["by_category"].items()},
+                "by_difficulty": {d: {"n": t["n"], "gold": t["gold"]} for d, t in res["by_difficulty"].items()},
             }
             results[name] = res
     finally:
@@ -2096,6 +2593,14 @@ def _settings(**k: Any) -> Dict[str, Any]:
     choice = k.get("choice")
     if choice is not None and choice.other:
         out.update(choice.fields())
+    if k.get("prompts_rel") is not None:
+        out["prompts_dir"] = k["prompts_rel"]
+    if k.get("voices") is not None:
+        out["voices"] = k["voices"].describe()
+    if k.get("common_answers") is not None:
+        out["common_answers"] = k["common_answers"]
+    if k.get("check_prompt") is not None:
+        out["check_prompt"] = k["check_prompt"].sha256  # the promotion check's prompt, generation/prompts/common_check.md
     return out
 
 
@@ -2106,7 +2611,10 @@ def generate_set(corpus_path: str, out: str, seed: int, targets: Dict[str, int],
                  sealed_out: Optional[str] = None, api_key_env: Optional[str] = None, estimate_only: bool = False,
                  estimate_from: Optional[Any] = None, core_quota: Optional[int] = None,
                  planted_pairs: Optional[str] = None, unit_caps: Optional[Dict[str, int]] = None,
-                 choice: Optional[ModelChoice] = None) -> Dict[str, Any]:
+                 choice: Optional[ModelChoice] = None, prompts_dir: Optional[str] = None,
+                 people: Optional[str] = None, owner: bool = False,
+                 common_answers: Optional[str] = None, forms: bool = False,
+                 force_form: Optional[str] = None, form_scheme: Optional[int] = None) -> Dict[str, Any]:
     """Generate, lint and freeze one question set into out (docs/generation.md). choice is
     the provider, model, endpoint and price (ModelChoice; by default Anthropic with
     model_id and api_key_env). model is anything with call(category, prompt, user,
@@ -2121,7 +2629,25 @@ def generate_set(corpus_path: str, out: str, seed: int, targets: Dict[str, int],
     its planted changes, which the version categories build their units from; unit_caps
     replaces categories' unit caps. estimate_only prints the estimate and returns before
     any call; estimate_from is a finished set's folder, or a list of them, that measured
-    its yields and tokens."""
+    its yields and tokens. prompts_dir takes the prompts from another folder (prompts/v7), and
+    people (a --people file) turns on the voices: an ASK line before each unit, and the
+    check that drops a question naming a role. owner, with people, makes every question its
+    owner's own message: the ASK line gives the owner and a shape, a question
+    naming its owner is dropped, a topic shows only its owner's records, and each candidate
+    keeps how it was asked. common_answers ("conversation" or "owner", docs/generation.md
+    section 6) changes what becomes of an item held only because its answer is in records
+    outside gold: a record of the gold record's conversation that holds the answer becomes gold
+    too, and under "owner" an item whose answer is otherwise only in other owners' records is
+    kept and carries common_answer. forms, with owner, gives each question a form as
+    well as a shape (open, how, when, choice, two-part), asks one unit in ten as a long message, lets
+    those through the checks they need, and marks a choice question that offers its answer. None of
+    these is recorded when it is not given, so a set built without them replays as before.
+    force_form, with forms, gives every unit that form instead of a drawn one (abstention stays
+    open): a set that tries one form on purpose. form_scheme 2, with forms (prompts/v7), draws the
+    forms by OWNER_FORMS_2, gives the when form only to a unit whose shown records hold a time, and
+    draws the side of a choice question's right answer onto the ASK line; 3 is 2 with the when form
+    kept to WHEN_CATEGORIES and weighed by OWNER_FORMS_3; 1, or not given, is the first scheme, and a
+    set built with any of them replays byte for byte."""
     say = (lambda *a, **k: None) if quiet else print
     if choice is None:
         choice = ModelChoice("anthropic", model_id, api_key_env=api_key_env)
@@ -2139,6 +2665,11 @@ def generate_set(corpus_path: str, out: str, seed: int, targets: Dict[str, int],
             raise GenerateError("--max-cost: an endpoint of your own (--base-url) has no price on file, so the guard "
                                 "cannot count its cost; give its prices with --price-in and --price-out (0 and 0 for "
                                 "a model that costs nothing to run)")
+        if choice.provider in ("azure", "bedrock"):
+            platform = "Azure" if choice.provider == "azure" else "Bedrock"
+            raise GenerateError(f"--max-cost: {platform} sets its own prices by deployment and region, and none is on "
+                                "file, so the guard cannot count the cost; give your prices with --price-in and "
+                                "--price-out")
         raise GenerateError(f"--max-cost: no price on file for {model_id} (PRICES), so the guard cannot count its cost; "
                             "give its prices with --price-in and --price-out")
     out_dir, qset_version = check_out(out, release, resume=resume and not split)
@@ -2186,7 +2717,36 @@ def generate_set(corpus_path: str, out: str, seed: int, targets: Dict[str, int],
         with open(README, encoding="utf-8") as f:
             readme = f.read()
     used = [c for c in rc.CATEGORIES if targets.get(c, 0) > 0]
-    prompts = load_prompts(used)
+    prompts_rel = None
+    if prompts_dir is not None:
+        if not os.path.isdir(prompts_dir):
+            raise GenerateError(f"--prompts: {prompts_dir} is not a folder")
+        here = os.path.realpath(prompts_dir)
+        root = os.path.realpath(REPO_DIR)
+        prompts_rel = (os.path.relpath(here, root).replace(os.sep, "/") if here.startswith(root + os.sep)
+                       else os.path.basename(here.rstrip(os.sep)))
+        prompts = load_prompts(used, prompts_dir)
+    else:
+        prompts = load_prompts(used)
+    # The promotion check's prompt ships with the builder; --prompts does not move it.
+    check_prompt = Prompt(CHECK_CATEGORY, CHECK_PROMPT) if common_answers is not None else None
+    if owner and people is None:
+        raise GenerateError("--owner needs --people: the file that says whose records are whose")
+    if forms and not (owner and people is not None):
+        raise GenerateError("--forms needs --people and --owner: a form is part of how the owner asks")
+    if force_form is not None and (not forms or force_form not in dict(OWNER_FORMS)):
+        raise GenerateError(f"--force-form {force_form}: needs --forms, and one of {', '.join(dict(OWNER_FORMS))}")
+    if form_scheme is not None and (isinstance(form_scheme, bool) or form_scheme not in FORM_SCHEMES or not forms):
+        raise GenerateError(f"--form-scheme {form_scheme}: needs --forms, and one of "
+                            f"{', '.join(str(s) for s in FORM_SCHEMES)}")
+    if common_answers is not None and common_answers not in COMMON_MODES:
+        raise GenerateError(f"--common-answers {common_answers}: one of {', '.join(COMMON_MODES)}")
+    if common_answers == "owner" and not (owner and people is not None):
+        raise GenerateError("--common-answers owner needs --people and --owner: it keeps an item whose answer is "
+                            "otherwise only in other owners' records, so it has to know whose records are whose")
+    voices = (Voices(seed, read_people(people), rc.file_sha256(people), owner=owner, forms=forms,
+                     force_form=force_form, form_scheme=form_scheme or 1) if people is not None else None)
+    owner_asks = voices is not None and voices.owner
 
     corpus_sha = rc.file_sha256(corpus_path)
     corpus = Corpus(records, spec, store_ids)
@@ -2202,11 +2762,23 @@ def generate_set(corpus_path: str, out: str, seed: int, targets: Dict[str, int],
         planted_info = {"file": os.path.basename(planted_pairs), "sha256": planted_sha, **planted_info}
     rare = rare_name_records(corpus, reps) if targets.get("entity_attribution", 0) > 0 else None
     plans = build_plans(corpus, reps, bands, targets, seed, corpus_sha, core, core_quota, unit_caps, planted, rare)
+    if owner_asks:
+        # When the owner asks, a pair is one owner's: a pair across two people would make one person's
+        # question need another person's record. The order is kept, and the core's count with it.
+        for plan in plans.values():
+            if plan.kind == "pair":
+                ok = [voices.key_of(corpus.by_id[a]) is not None
+                      and voices.key_of(corpus.by_id[a]) == voices.key_of(corpus.by_id[b]) for a, b in plan.units]
+                if plan.n_core is not None:
+                    plan.n_core = sum(ok[:plan.n_core])
+                plan.units = [u for u, k in zip(plan.units, ok) if k]
+    eligible_ids = {m for r in reps for m in corpus.cluster[r]}  # what may be shown: whole clusters only
     states = {c: _Category(plans[c], targets.get(c, 0), core_quota) for c in rc.CATEGORIES}
     settings = _settings(qset_version=qset_version, sealed_name=sealed_name, corpus_sha=corpus_sha, seed=seed,
                          targets=targets, model_id=model_id, store_ids=store_ids, window=window, core=core,
                          core_quota=core_quota, split_seed=split_seed, spec=spec, prompts=prompts,
-                         unit_caps=unit_caps, planted_sha=planted_sha, choice=choice)
+                         unit_caps=unit_caps, planted_sha=planted_sha, choice=choice, prompts_rel=prompts_rel,
+                         voices=voices, common_answers=common_answers, check_prompt=check_prompt)
     say(f"Corpus {os.path.basename(corpus_path)}: {corpus.N} records, {len(reps)} eligible memories "
         f"({eligible_records} records with their near copies)"
         + (f" in the gold window of {window}" if window < corpus.N else "")
@@ -2234,7 +2806,7 @@ def generate_set(corpus_path: str, out: str, seed: int, targets: Dict[str, int],
         folders = [estimate_from] if isinstance(estimate_from, str) else list(estimate_from or [])
         calibration = read_calibrations(folders) if folders else None
         est = estimate(plans, targets, corpus, prompts, model_id, recorded, calibration, core_quota, sample_cap,
-                       choice=choice)
+                       choice=choice, voices=voices)
         print_estimate(est, say)
         return {"estimate": est, "out": out_dir, "qset_version": qset_version}
 
@@ -2265,7 +2837,10 @@ def generate_set(corpus_path: str, out: str, seed: int, targets: Dict[str, int],
             return None
         return "core" if all(corpus.pos[r] < core for r in ids) else "tail"
 
-    def do_call(cat: str, prompt: Prompt, user: str, units: Sequence[Tuple[str, ...]], retry_of: Optional[int]):
+    def do_call(cat: str, prompt: Prompt, user: str, units: Sequence[Tuple[str, ...]], retry_of: Optional[int],
+                check_of: Optional[int] = None):
+        """One recorded call. check_of names the candidate a promotion check is for: it is
+        recorded under CHECK_CATEGORY and is not a unit of any category's sample."""
         nonlocal out_ready
         req = request_sha256(model_id, prompt, user, choice)
         free = hasattr(model, "holds") and model.holds(req)
@@ -2287,6 +2862,9 @@ def generate_set(corpus_path: str, out: str, seed: int, targets: Dict[str, int],
             for c in used:
                 with open(os.path.join(work_dir, "generation", "prompts", f"{c}.md"), "wb") as f:
                     f.write(prompts[c].data)
+            if check_prompt is not None:
+                with open(os.path.join(work_dir, "generation", "prompts", f"{CHECK_CATEGORY}.md"), "wb") as f:
+                    f.write(check_prompt.data)
             _dump(run_path, settings)
             open(calls_path, "w", encoding="utf-8", newline="\n").close()
             out_ready = True
@@ -2297,7 +2875,8 @@ def generate_set(corpus_path: str, out: str, seed: int, targets: Dict[str, int],
         reasoning = {} if reply.reasoning_tokens is None else {"reasoning_tokens": reply.reasoning_tokens}
         priced_at = ({"price_usd_per_million": list(choice.price) if choice.price else None}
                      if choice.priced_record() else {})
-        call = {"n": len(calls) + 1, "category": cat, "retry_of": retry_of, "units": [list(u) for u in units],
+        check = {} if check_of is None else {"check_of": check_of}
+        call = {"n": len(calls) + 1, "category": cat, "retry_of": retry_of, **check, "units": [list(u) for u in units],
                 "request_sha256": req, "model": model_id, **provider, "served_model": reply.model,
                 "stop_reason": reply.stop_reason, "input_tokens": reply.input_tokens,
                 "output_tokens": reply.output_tokens, **reasoning,
@@ -2314,11 +2893,26 @@ def generate_set(corpus_path: str, out: str, seed: int, targets: Dict[str, int],
         if not reply.in_log:
             spent[1] += cost
         calls.append(dict(call, new=not reply.in_log, line=line))
-        entry = {"call": call["n"], "units": [list(u) for u in units]}
-        if retry_of is not None:
-            entry["retry_of"] = retry_of
-        sample[cat].append(entry)
+        if check_of is None:
+            entry = {"call": call["n"], "units": [list(u) for u in units]}
+            if retry_of is not None:
+                entry["retry_of"] = retry_of
+            sample[cat].append(entry)
         return call, reply
+
+    def confirm_for(cand: Dict[str, Any], q: Dict[str, Any]) -> Callable[[str], Optional[bool]]:
+        """The promotion check for one candidate: asks the writer whether a record gives the
+        answer to the question (docs/generation.md section 6). The record counts as shown, so
+        a check never takes the run past the sample cap; when it would, nothing is asked."""
+        def confirm(rid: str) -> Optional[bool]:
+            rep = corpus.cluster[rid][0]
+            if rep not in shown and len(shown) >= sample_cap:
+                return None
+            shown.add(rep)
+            _, reply = do_call(CHECK_CATEGORY, check_prompt, check_message(q, corpus.by_id[rid]), [(rid,)], None,
+                               check_of=cand["n"])
+            return check_verdict(reply.text)
+        return confirm
 
     def process(cat: str, st: _Category, prompt: Prompt, items: List[Any], batch: Sequence[Tuple[str, ...]],
                 call_n: int, retry_of: Optional[int], held: Optional[Dict[str, Any]] = None
@@ -2338,6 +2932,8 @@ def generate_set(corpus_path: str, out: str, seed: int, targets: Dict[str, int],
             if unit is not None:
                 cand["unit"] = list(unit)
                 cand["stage"] = stage_of(unit)
+                if owner_asks:
+                    cand["ask"] = voices.record(cat, unit, corpus)
                 per_unit[unit] += 1
                 if per_unit[unit] > ITEMS_PER_UNIT[st.plan.kind]:
                     reason = f"more than {ITEMS_PER_UNIT[st.plan.kind]} item(s) for one {st.plan.kind}"
@@ -2346,7 +2942,9 @@ def generate_set(corpus_path: str, out: str, seed: int, targets: Dict[str, int],
                 elif held is not None and padded_retry(item, held):
                     reason = f"{PADDED_RETRY}: the answer only adds words around the held answer"
                 else:
-                    reason = rule_checks(cat, item, unit, corpus)
+                    reason = rule_checks(cat, item, unit, corpus, roles=voices is not None,
+                                         owner=cand["ask"].get("owner") if owner_asks else None,
+                                         ask=cand["ask"] if owner_asks and voices.forms else None)
             if reason:
                 st.settle(cand, "dropped_by_checks", reason)
                 if reason.startswith(PADDED_RETRY):
@@ -2357,7 +2955,20 @@ def generate_set(corpus_path: str, out: str, seed: int, targets: Dict[str, int],
                 if reason:
                     st.settle(cand, "dropped_by_screen", reason)
                     continue
-            q = assemble(cat, item, unit, corpus, spec, f"cand_{cand['n']:05d}")
+            owner_key = cand["ask"].get("key") if owner_asks else None
+            keep = (lambda m: voices.key_of(corpus.by_id[m]) == owner_key) if owner_asks else None
+            q = assemble(cat, item, unit, corpus, spec, f"cand_{cand['n']:05d}", keep=keep)
+            if owner_asks and q["gold_ids"]:
+                # One owner's question needs that owner's records only, the current version included.
+                keys = {voices.key_of(corpus.by_id[g]) for g in q["gold_ids"] + rc.current_ids(q.get("must_rank_first"))}
+                if owner_key is None or keys != {owner_key}:
+                    st.settle(cand, "dropped_by_checks", "its gold records are not all its owner's")
+                    continue
+            if owner_asks and voices.forms and cand["ask"].get("form") == "choice" and q["gold_ids"]:
+                side = choice_side(q)
+                if side is not None:  # it offers its answer as one of two options joined by "or"
+                    q[rc.CHOICE] = True
+                    cand["choice_side"] = side
             if q["gold_ids"]:
                 cand["stage"] = stage_of(q["gold_ids"])
             if cat in rc.ALL_GOLD_CATEGORIES and len(q["gold_ids"]) > band_window:
@@ -2365,6 +2976,15 @@ def generate_set(corpus_path: str, out: str, seed: int, targets: Dict[str, int],
                                                      f"included, cannot all fit the window of {band_window}")
                 continue
             res = lv.lint_item(q, cand["n"], corpus.ctx)
+            if common_answers is not None and q["gold_ids"] and not res["publishable"] and retryable(res["findings"]):
+                q2, cand["common"] = gold_or_common(cat, q, corpus, voices, common_answers, window,
+                                                    confirm=confirm_for(cand, q), eligible=eligible_ids)
+                res2 = lv.lint_item(q2, cand["n"], corpus.ctx) if q2 is not None else None
+                if res2 is not None and res2["publishable"]:
+                    q, res = q2, res2
+                    cand["stage"] = stage_of(q["gold_ids"])
+                else:
+                    cand["common"]["outcome"] = "held"  # another rule holds the changed item: it stays as written
             status = res["proposed_review_status"]
             cand["lint_status"] = status
             cand["findings"] = [{k: f[k] for k in ("rule_id", "severity", "code", "message")}
@@ -2422,7 +3042,7 @@ def generate_set(corpus_path: str, out: str, seed: int, targets: Dict[str, int],
                 continue
             progressed = True
             prompt = prompts[cat]
-            call, reply = do_call(cat, prompt, user_message(cat, batch, corpus), batch, None)
+            call, reply = do_call(cat, prompt, user_message(cat, batch, corpus, voices), batch, None)
             cache_read = call["cache_read_input_tokens"]
             st.counts["calls"] += 1
             items, problem = parse_reply(reply)
@@ -2437,8 +3057,8 @@ def generate_set(corpus_path: str, out: str, seed: int, targets: Dict[str, int],
                     break  # the category has what it needs, so a retry would buy nothing
                 if cand["stage"] == "core" and st.core_quota_met():
                     continue  # a core item could not freeze past the core quota
-                retry, reply = do_call(cat, prompt, retry_message(cat, item, unit, corpus, conflicts), [unit],
-                                       cand["n"])
+                retry, reply = do_call(cat, prompt, retry_message(cat, item, unit, corpus, conflicts, voices),
+                                       [unit], cand["n"])
                 st.counts["calls"] += 1
                 st.counts["retry_calls"] += 1
                 again, problem = parse_reply(reply)
@@ -2534,7 +3154,8 @@ def generate_set(corpus_path: str, out: str, seed: int, targets: Dict[str, int],
                   eligible_records=eligible_records, sample_cap=sample_cap, sample_path=sample_path,
                   states=states, calls_path=calls_path, cands_path=cands_path, run_path=run_path, spec=spec,
                   window=window, core=core, core_quota=core_quota, split_seed=split_seed, frozen=frozen,
-                  unit_caps=unit_caps, planted=planted_info, rare=rare)
+                  unit_caps=unit_caps, planted=planted_info, rare=rare, prompts_rel=prompts_rel, voices=voices,
+                  common_answers=common_answers)
     for half, w in written.items():
         other = written.get({"public": "sealed", "sealed": "public"}.get(half))
         w["manifest"] = _manifest(qset_version=w["name"], q_path=w["q_path"], c_path=w["c_path"],
@@ -2721,15 +3342,22 @@ def _manifest(**k: Any) -> Dict[str, Any]:
         "server_side_fallbacks": False, "sdk": next((c["sdk"] for c in calls if c["sdk"]), None),
         "started": calls[0]["started"] if calls else None, "finished": calls[-1]["time"] if calls else None,
         "calls": len(calls), "retry_calls": sum(1 for c in calls if c.get("retry_of") is not None),
+        **({"check_calls": checks} if (checks := sum(1 for c in calls if c.get("check_of") is not None)) else {}),
         "input_tokens": cost_of("input_tokens"), "output_tokens": cost_of("output_tokens"),
         "cache_creation_input_tokens": cost_of("cache_creation_input_tokens"),
         "cache_creation_1h_input_tokens": sum(c.get("cache_creation_1h_input_tokens", 0) for c in calls),
         "cache_read_input_tokens": cost_of("cache_read_input_tokens"),
         "cost_usd": round(total, 2) if priced else None,
         "cost_note": "from the call log's token counts at the prices in PRICES; the bill is the authority"}
-    if choice is not None and choice.other:
+    if choice is not None and choice.other and choice.claude_request:
+        # Claude on Bedrock: Anthropic's request, so Anthropic's cache marking and no
+        # server-side fallback, with the provider and the endpoint it went to.
+        model_info = {"provider": choice.provider, "endpoint": choice.endpoint, **model_info,
+                      "effort": choice.effort, "max_tokens": choice.max_tokens, "system_cache": SYSTEM_CACHE,
+                      "server_side_fallbacks": False}
+    elif choice is not None and choice.other:
         # Another provider's own cap and effort, its endpoint, and no Anthropic cache marking
-        # (OpenAI and Google cache on their own; the tokens they read from it are counted).
+        # (OpenAI, Azure and Google cache on their own; the tokens they read from it are counted).
         model_info = {"provider": choice.provider, "endpoint": choice.endpoint, **model_info,
                       "effort": choice.effort, "max_tokens": choice.max_tokens, "system_cache": None,
                       "server_side_fallbacks": None,
@@ -2741,10 +3369,23 @@ def _manifest(**k: Any) -> Dict[str, Any]:
     m.update({
         "targets": {c: k["targets"].get(c, 0) for c in rc.CATEGORIES},
         "model": model_info,
-        "prompts": {c: {"file": f"prompts/{c}.md", "sha256": p.sha256} for c, p in k["prompts"].items()},
+        "prompts": {c: {"file": f"{k.get('prompts_rel') or 'prompts'}/{c}.md", "sha256": p.sha256}
+                    for c, p in k["prompts"].items()},
         "sampler": sampler,
         "generation": generation,
     })
+    if k.get("voices") is not None:
+        m["voices"] = k["voices"].describe()
+    if k.get("common_answers") is not None:
+        kept = [c for c in k["cands"] if c.get("question_id") and c.get("common")]
+        m["common_answers"] = {
+            "mode": k["common_answers"],
+            "gold_grown": sum(1 for c in kept if c["common"]["gold_added"]),
+            "records_added": sum(len(c["common"]["gold_added"]) for c in kept),
+            rc.COMMON_ANSWER: sum(1 for c in kept if c["common"]["outcome"] == rc.COMMON_ANSWER),
+            "note": "gold_grown questions took the records of the gold record's conversation that hold the answer "
+                    "as gold; common_answer questions are scored by record id alone and are not in the exact tier",
+        }
     if half is not None:
         other = k["other"]
         rule = ["category"] + (["core or tail"] if core is not None else [])
@@ -2878,7 +3519,7 @@ def read_calibrations(folders: Sequence[str]) -> Dict[str, Any]:
 def estimate(plans: Dict[str, Plan], targets: Dict[str, int], corpus: Corpus, prompts: Dict[str, Prompt],
              model_id: str, recorded: Optional[ReplayModel] = None, calibration: Optional[Dict[str, Any]] = None,
              core_quota: Optional[int] = None, sample_cap: Optional[int] = None,
-             choice: Optional[ModelChoice] = None) -> Dict[str, Any]:
+             choice: Optional[ModelChoice] = None, voices: Optional[Voices] = None) -> Dict[str, Any]:
     """The questions, calls, tokens and cost a run is likely to come to, before any call
     (section 16). Input tokens come from the planned messages themselves, with each
     category's system prompt written to the cache on its first call and read from it after
@@ -2893,7 +3534,7 @@ def estimate(plans: Dict[str, Plan], targets: Dict[str, int], corpus: Corpus, pr
     cal = (calibration or {}).get("categories", {})
     ratio = (calibration or {}).get("chars_per_token") or EST_CHARS_PER_TOKEN
     price = choice.price if choice is not None else PRICES.get(model_id)
-    cache = None if choice is not None and choice.other else SYSTEM_CACHE
+    cache = None if choice is not None and not choice.claude_request else SYSTEM_CACHE
     rows = {}
     shown_expected: set = set()  # the distinct records the planned units would show, against the sample cap
     shown_worst: set = set()
@@ -2959,7 +3600,7 @@ def estimate(plans: Dict[str, Plan], targets: Dict[str, int], corpus: Corpus, pr
                 n = used[stage]
                 chunks = [units[i:i + batch] for i in range(0, n, batch)]
                 more = round(len(chunks) * r[stage]["retries_per_call"])
-                chars = sum(len(user_message(cat, c, corpus)) for c in chunks)
+                chars = sum(len(user_message(cat, c, corpus, voices)) for c in chunks)
                 user_chars += chars + more * (chars / max(n, 1) + 400)  # a retry shows one unit and the held item
                 out_tokens += len(chunks) * r[stage]["output_per_call"] + more * r[stage]["output_per_retry"]
                 calls, retries = calls + len(chunks), retries + more
@@ -3079,7 +3720,10 @@ def print_estimate(est: Dict[str, Any], say: Callable[..., None]) -> None:
     if "recorded" in est:
         say(f"  the log already holds {est['recorded']['calls']} calls ({money(est['recorded']['cost_usd'])}); "
             "a --resume replays them free")
-    if "provider" in est:
+    if "provider" in est and est["provider"] == "bedrock":
+        say(f"  (bedrock at {est['endpoint']}: Claude with Anthropic's own request, so the guesses and the cache "
+            "apply as they do on Anthropic's API.)")
+    elif "provider" in est:
         say(f"  ({est['provider']} at {est['endpoint']}: the guessed tokens per call were measured on Claude, and "
             "another model counts tokens its own way and spends output tokens reasoning; every prompt is counted "
             "uncached. Before a full run, build a small pilot set and pass its folder with --estimate-from.)")
@@ -3154,15 +3798,20 @@ def main(argv: Optional[List[str]] = None) -> int:
                    help="Publishable items per category: one number for every category, or category=number pairs "
                         f"(default {DEFAULT_TARGET}, the standard minimum)")
     p.add_argument("--provider", default="anthropic", choices=PROVIDERS,
-                   help="Who runs the model: anthropic (the default), openai or google. openai with --base-url is any "
-                        "endpoint that speaks OpenAI's chat format")
+                   help="Who runs the model: anthropic (the default), openai, google, azure (your Azure resource, "
+                        "with --base-url and --model) or bedrock (Claude on Amazon Bedrock, with a region). openai "
+                        "with --base-url is any endpoint that speaks OpenAI's chat format")
     p.add_argument("--model", default=None,
                    help="Generation model (default: " + ", ".join(f"{name} on {who}" for who, name in DEFAULT_MODELS.items())
-                        + "; required with --base-url)")
+                        + "; required with --base-url, and on azure, where it names your deployment)")
+    p.add_argument("--aws-region", default=None, metavar="REGION",
+                   help="With --provider bedrock: the AWS region whose Bedrock runs the calls, such as us-east-1 "
+                        "(default: AWS_REGION in the environment). Recorded in the set as Bedrock's address there")
     p.add_argument("--base-url", default=None, metavar="URL",
                    help="With --provider openai: send the calls to this endpoint instead of OpenAI's, such as "
                         "http://localhost:11434/v1 for a local Ollama server. It gets a key only from --api-key-env, "
-                        "never OPENAI_API_KEY. Recorded in the set")
+                        "never OPENAI_API_KEY. With --provider azure: your Azure resource's v1 address, such as "
+                        "https://NAME.openai.azure.com/openai/v1. Recorded in the set")
     p.add_argument("--price-in", type=float, default=None, metavar="USD",
                    help="With --price-out: the model's input price in US dollars per million tokens, in place of the "
                         "price table (which can go stale) or for a model it does not list, so --max-cost can count. "
@@ -3219,14 +3868,49 @@ def main(argv: Optional[List[str]] = None) -> int:
                    help="One tiny call that proves the key and the network: ok and the model, or the error's class")
     p.add_argument("--api-key-env", default=None, metavar="NAME",
                    help="Read the API key from this one environment variable instead of the provider's own "
-                        "(ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY or GOOGLE_API_KEY), and send every call to "
-                        "the provider's official endpoint whatever its base-URL variable says. With --base-url, the "
-                        "only way to give that endpoint a key. Not recorded")
+                        "(ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY or GOOGLE_API_KEY; AZURE_OPENAI_API_KEY on "
+                        "azure), and send every call to the provider's official endpoint whatever its base-URL variable "
+                        "says. With --base-url on openai, the only way to give that endpoint a key. On bedrock, a "
+                        "Bedrock API key, used before AWS_BEARER_TOKEN_BEDROCK and your AWS credentials. Not recorded")
+    p.add_argument("--prompts", default=None, metavar="DIR",
+                   help="Take the category prompts from this folder (such as prompts/v7) instead of prompts/. Its "
+                        "path and every prompt's SHA-256 are recorded")
+    p.add_argument("--people", default=None, metavar="FILE",
+                   help="Turn on the voices: a JSON object from a record's source (or the part before its first '-', "
+                        "or '*') to the first name of the person whose records they are. Each unit's question is "
+                        "then asked in a seeded voice and shape, written on an ASK line, and a question that names a "
+                        "role (the user, the assistant) is dropped. Needs prompts that read the ASK line")
+    p.add_argument("--owner", action="store_true",
+                   help="With --people: treat the store as its owner's. Every question is the owner's own message to "
+                        "their assistant (I, my, you), in a seeded shape; the ASK line gives the owner's first name; "
+                        "a question that names its owner is dropped; a topic shows only its owner's records; and each "
+                        "candidate records its owner. prompts/v7 is written for it, with --forms")
+    p.add_argument("--forms", action="store_true",
+                   help="With --people and --owner: each question also gets a form on its ASK line (open, how, "
+                        "when, choice, two-part), one unit in ten is asked as a long message, and the checks let "
+                        "each through what it needs. prompts/v7 is written for it, with --form-scheme 2 or 3")
+    p.add_argument("--force-form", choices=[name for name, _ in OWNER_FORMS], default=None,
+                   help="With --forms: every unit but abstention gets this form instead of a drawn one, to try one "
+                        "form on purpose")
+    p.add_argument("--form-scheme", type=int, choices=list(FORM_SCHEMES), default=None,
+                   help="With --forms: 2 draws the forms by OWNER_FORMS_2 (choice about 7.5%%), gives the "
+                        "when form only to a temporal_awareness unit or a unit whose shown records hold a time, "
+                        "a date, a day or a length of time, and draws the side a choice question's right answer "
+                        "goes on onto the ASK line (right: first or second). 3 is 2 with the when form kept to "
+                        "the categories whose answer can be a time (WHEN_CATEGORIES; temporal_awareness always). "
+                        "1, or not given, is the first scheme. prompts/v7 is written for 2 and 3")
+    p.add_argument("--common-answers", choices=COMMON_MODES, default=None,
+                   help="What becomes of an item held only because its answer is also in records outside gold. "
+                        "conversation: a record of the gold record's conversation (the same source) that holds the "
+                        "answer is gold too. owner (with --people and --owner): that, and an item whose answer is "
+                        "otherwise only in other owners' records is kept, carries common_answer and is scored by "
+                        "record id alone. Not set: such an item is held and retried, as before")
     args = p.parse_args(argv)
 
     def choose() -> ModelChoice:
         return ModelChoice(args.provider, args.model, base_url=args.base_url, api_key_env=args.api_key_env,
-                           price_in=args.price_in, price_out=args.price_out, max_output_tokens=args.max_output_tokens)
+                           price_in=args.price_in, price_out=args.price_out, max_output_tokens=args.max_output_tokens,
+                           aws_region=args.aws_region)
 
     if args.check_api:
         try:
@@ -3257,7 +3941,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                               core=args.core, split_seed=args.split_seed, sealed_out=args.sealed_out,
                               api_key_env=args.api_key_env, estimate_only=args.estimate,
                               estimate_from=args.estimate_from, core_quota=args.core_quota,
-                              planted_pairs=args.planted_pairs, unit_caps=unit_caps)
+                              planted_pairs=args.planted_pairs, unit_caps=unit_caps, prompts_dir=args.prompts,
+                              people=args.people, owner=args.owner, common_answers=args.common_answers,
+                              forms=args.forms, force_form=args.force_form, form_scheme=args.form_scheme)
     except CostStop as exc:
         print(f"STOPPED: {exc}", file=sys.stderr)
         return 3

@@ -101,6 +101,8 @@ parsica-recall generate-questions --corpus ~/exports/my-store/corpus.jsonl --out
 | Anthropic | none (the default) | `pip install "parsica-recall[generate]"` | `ANTHROPIC_API_KEY` | `claude-sonnet-5-5` |
 | OpenAI | `--provider openai` | `pip install "parsica-recall[openai]"` | `OPENAI_API_KEY` | `gpt-6.2-sol` |
 | Google (the Gemini API) | `--provider google` | `pip install "parsica-recall[google]"` | `GEMINI_API_KEY` or `GOOGLE_API_KEY` | `gemini-4-hydrogen` |
+| Azure (your Azure resource) | `--provider azure --base-url URL --model DEPLOYMENT` | `pip install "parsica-recall[openai]"` | `AZURE_OPENAI_API_KEY` | none: `--model` names your deployment |
+| Amazon Bedrock (Claude) | `--provider bedrock --aws-region REGION` | `pip install "parsica-recall[bedrock]"` | a Bedrock API key in `AWS_BEARER_TOKEN_BEDROCK` or the variable you name with `--api-key-env`; else your AWS credentials | `anthropic.claude-sonnet-5-5` |
 | An endpoint of your own | `--provider openai --base-url URL --model NAME` | `pip install "parsica-recall[openai]"` | none, or the variable you name with `--api-key-env` | none: `--model` is required |
 
 ```bash
@@ -115,13 +117,46 @@ For Google, the same with `[google]`, `GEMINI_API_KEY` and `--provider google`. 
 
 `--model` picks another model of the same provider. Prices are on file for:
 
-- Anthropic: `claude-sonnet-5-5`, `claude-opus-5-5`, `claude-fable-5-1`
+- Anthropic: `claude-haiku-5-5`, `claude-sonnet-5-5`, `claude-opus-5-5`, `claude-fable-5-1`, `claude-fable-5-2`
 - OpenAI: `gpt-6.2-astra`, `gpt-6.2-sol`, `gpt-6.1-terra`, `gpt-6-luna`
 - Google: `gemini-4-carbon`, `gemini-4-argon`, `gemini-4-neon`, `gemini-4-hydrogen`, `gemini-3.5-flash-lite`
 
 They were taken from each provider's price list in October and November 2026 (Gemini 4 Carbon and Argon at the prices they move to on December 1, 2026), and prices change. For any other model, or when one of these has gone stale, give the prices yourself with `--price-in` and `--price-out`, in US dollars per million tokens. The set records which prices its cost was counted at.
 
-Every provider gets the same request: the category's frozen prompt as the system message, the sampled records as the user message, and the JSON schema the reply must follow (in strict mode on OpenAI). OpenAI and Gemini models are asked to reason at high effort, with room for 32,000 output tokens; their reasoning tokens are billed as output, and the call log and the manifest count them. The prompts were written while building sets with Claude. Every other model follows the same prompts, and every item it writes goes through the same checks and the same lint, so a model that writes worse questions freezes fewer of them; it never lowers the bar.
+Every provider gets the same request: the category's frozen prompt as the system message, the sampled records as the user message, and the JSON schema the reply must follow (in strict mode on OpenAI). OpenAI and Gemini models are asked to reason at high effort, with room for 32,000 output tokens; their reasoning tokens are billed as output, and the call log and the manifest count them. Azure gets OpenAI's request, and Bedrock gets Anthropic's. The prompts were written while building sets with Claude. Every other model follows the same prompts, and every item it writes goes through the same checks and the same lint, so a model that writes worse questions freezes fewer of them; it never lowers the bar.
+
+### Azure and Amazon Bedrock
+
+**Azure.** `--provider azure` sends OpenAI's own request (reasoning at high effort, the strict JSON schema, room for 32,000 output tokens, `store=false`) to your Azure resource's v1 address:
+
+```bash
+pip install "parsica-recall[openai]"
+export AZURE_OPENAI_API_KEY=...
+parsica-recall generate-questions --provider azure --base-url https://NAME.openai.azure.com/openai/v1 \
+    --model DEPLOYMENT --check-api
+parsica-recall generate-questions --provider azure --base-url https://NAME.openai.azure.com/openai/v1 \
+    --model DEPLOYMENT --price-in IN --price-out OUT --corpus ~/exports/my-store/corpus.jsonl \
+    --out ~/recall-sets/my-store-v1 --seed 7 --store-ids --max-cost 10
+```
+
+- **The address.** `--base-url` is your resource's address, ending in `/openai/v1`, over `https://` on an Azure host. The key goes there and nowhere else.
+- **The model.** `--model` is the name of your deployment. The set records it, and every call records the model Azure says answered.
+- **The key.** It comes from `AZURE_OPENAI_API_KEY`, or from the one variable you name with `--api-key-env`.
+- **The price.** Azure sets its prices by deployment type and region, so none is on file. Give yours with `--price-in` and `--price-out`, in US dollars per million tokens.
+
+**Amazon Bedrock.** `--provider bedrock` sends Anthropic's own request (the same frozen prompt, written to the prompt cache, effort high, the JSON schema) to Claude on Bedrock in your region, through the anthropic SDK's Bedrock client:
+
+```bash
+pip install "parsica-recall[bedrock]"
+parsica-recall generate-questions --provider bedrock --aws-region us-east-1 --model anthropic.claude-opus-5-5 --check-api
+parsica-recall generate-questions --provider bedrock --aws-region us-east-1 --model anthropic.claude-opus-5-5 \
+    --price-in IN --price-out OUT --corpus ~/exports/my-store/corpus.jsonl --out ~/recall-sets/my-store-v1 \
+    --seed 7 --store-ids --max-cost 10
+```
+
+- **The credentials.** A Bedrock API key, from the one variable you name with `--api-key-env` or else from `AWS_BEARER_TOKEN_BEDROCK` (or `ANTHROPIC_AWS_API_KEY`), which the SDK reads itself. Without one, your AWS credentials, found the way the AWS tools find them (the environment, a profile), sign each call. So a Bedrock API key in the environment is used ahead of AWS credentials beside it.
+- **The region and the model.** `--aws-region`, or `AWS_REGION` in the environment, picks the region. `--model` is the model's id on Bedrock, `anthropic.claude-sonnet-5-5` unless you name another. The model has to be available to your account in that region; `--check-api` proves it with one tiny call.
+- **The price.** Bedrock sets its own prices, so none is on file. Give yours with `--price-in` and `--price-out`.
 
 ### A model on your own machine, or any compatible endpoint
 
@@ -243,13 +278,15 @@ It prints which questions were won and lost. The two runs have to share the ques
 
 ## What leaves your machine
 
-One step sends data anywhere: building the set (step 3). It goes to the provider you chose, under your own key: the Anthropic API, the OpenAI API, Google's Gemini API, or the endpoint you named with `--base-url`. An endpoint on your own machine keeps everything on it.
+One step sends data anywhere: building the set (step 3). It goes to the provider you chose, under your own key: the Anthropic API, the OpenAI API, Google's Gemini API, your Azure resource, Amazon Bedrock in your region, or the endpoint you named with `--base-url`. An endpoint on your own machine keeps everything on it.
 
 **Each provider's terms apply to what it is sent.** Read them before you send your store:
 
 - **Google.** Google's [Gemini API terms](https://ai.google.dev/gemini-api/terms) let it use what is sent to its unpaid tier, the free one, to improve its products, and people may read it; they ask you not to send personal or confidential information there. The paid terms do not allow that use, and they apply when the key belongs to a Google Cloud project with billing turned on. Build a set from your own store with such a key only.
 - **OpenAI.** The request asks OpenAI not to keep a stored copy of the reply (`store=false`). OpenAI's [policy for API data](https://openai.com/enterprise-privacy/) says how long it keeps requests and whether they train its models.
 - **Anthropic.** Anthropic's commercial terms for the API apply.
+- **Azure.** The terms of your Azure subscription apply, in your resource's region. The request carries `store=false`, as it does on OpenAI.
+- **Amazon Bedrock.** The terms of your AWS account apply, in the region you named.
 - **An endpoint of your own.** Whoever runs it.
 
 **What is sent.** The category's frozen prompt, and the text of the sampled records with their `id`, `kind`, `ts` and `source`. Never the whole store: at most half of the eligible records are ever shown. A retry names the words of an answer that leaked and shows no other record.
@@ -258,7 +295,7 @@ One step sends data anywhere: building the set (step 3). It goes to the provider
 
 **The limit of that screen.** It reads shapes, not meaning. A record that says, in plain words, something private about you or someone else has no shape to catch and can be sent. If your store holds records you would not send to an API, take them out of the export first.
 
-**Your key.** It is read from the environment by the provider's SDK (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY` or `GOOGLE_API_KEY`), or from the one variable you name with `--api-key-env`. An endpoint of your own gets a key only from that variable. The key is never printed, logged or written, and it is taken out of every error message.
+**Your key.** It is read from the environment by the provider's SDK (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY` or `GOOGLE_API_KEY`; `AZURE_OPENAI_API_KEY` for Azure), or from the one variable you name with `--api-key-env`. An endpoint of your own gets a key only from that variable. On Bedrock, the SDK sends a Bedrock API key (the variable `--api-key-env` names, else `AWS_BEARER_TOKEN_BEDROCK`) or, without one, signs each call with your AWS credentials. The key is never printed, logged or written, and it is taken out of every error message.
 
 **What is written to disk.** Only the `--out` folder (and `--sealed-out`): the set, a full copy of your export, every record shown to the model, and every call with its reply. Nothing is written until the first reply arrives.
 

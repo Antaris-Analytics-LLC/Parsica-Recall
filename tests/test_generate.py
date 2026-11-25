@@ -118,12 +118,20 @@ def pair_writer(category, units):
 
 
 class FakeModel:
-    """Stands in for the API: a writer turns each call's records into items."""
+    """Stands in for the API: a writer turns each call's records into items. A promotion
+    check (--common-answers) is answered by checker, which reads the check's user message;
+    by default every record gives the answer."""
 
-    def __init__(self, writer=toolbox_writer, stop_reason="end_turn", text=None):
+    def __init__(self, writer=toolbox_writer, stop_reason="end_turn", text=None, checker=None):
         self.writer, self.stop_reason, self.text = writer, stop_reason, text
+        self.checker = checker or (lambda user: True)
+        self.checks = []
 
     def call(self, category, prompt, user, request_sha):
+        if category == gq.CHECK_CATEGORY:
+            self.checks.append(user)
+            text = json.dumps({"items": [{"answers": bool(self.checker(user))}]})
+            return gq.Reply(text, "fake-model", self.stop_reason, 5, 1, TIME, "fake")
         units = gq.parse_user_message(user)
         text = self.text if self.text is not None else json.dumps({"items": self.writer(category, units)})
         return gq.Reply(text, "fake-model", self.stop_reason, 7, 3, TIME, "fake")
@@ -773,7 +781,16 @@ class FreezeTests(GenTestCase):
         self.assertEqual(report["questions_sha256"], m["files"]["questions.json"])
         self.assertEqual(report["summary"]["items_with_errors"], 0)
         with open(path("reference.json"), encoding="utf-8") as f:
-            self.assertEqual(set(json.load(f)["runs"]), {"oracle", "bm25"})
+            reference = json.load(f)
+        self.assertEqual(set(reference["runs"]), {"oracle", "bm25"})
+        for run in reference["runs"].values():
+            # each run also keeps n and gold at every k per category and per difficulty
+            answerable = sum(n for c, n in m["counts"]["by_category"].items() if c != "abstention")
+            self.assertEqual(sum(t["n"] for c, t in run["by_category"].items() if c != "abstention"), answerable)
+            self.assertEqual(sum(t["n"] for t in run["by_difficulty"].values()), answerable)
+            for t in list(run["by_category"].values()) + list(run["by_difficulty"].values()):
+                self.assertEqual(set(t), {"n", "gold"})
+                self.assertEqual(set(t["gold"]), set(run["gold"]))
         self.assertTrue(res["check"]["ok"])
         self.assertEqual((res["check"]["gold_at_window"], res["check"]["verified"]), (100.0, "yes"))
 

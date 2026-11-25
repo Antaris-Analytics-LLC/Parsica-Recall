@@ -38,9 +38,9 @@ NAME = "parsica-recall"
 DIST = "parsica_recall"
 MAX_BYTES = 12 * 1024 * 1024      # the wheel is about 2 MB; a much larger one holds something it should not
 # The optional extras and the one SDK each installs: generate is the anthropic SDK (both
-# generators), openai and google are the question builder's other providers. Nothing is
-# installed without an extra.
-EXTRAS = {"generate": "anthropic", "openai": "openai", "google": "google-genai"}
+# generators), openai and google are the question builder's other providers, and bedrock is
+# the anthropic SDK again with its AWS signing. Nothing is installed without an extra.
+EXTRAS = {"generate": "anthropic", "openai": "openai", "google": "google-genai", "bedrock": "anthropic"}
 
 
 def sha256(data: bytes) -> str:

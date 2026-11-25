@@ -75,7 +75,7 @@ parsica-recall score ~/recall-task/results.jsonl
 The report and the results file are the ones an adapter run produces, from the same scorer. The last line is the one-line result:
 
 ```
-recall/1.0 track=none band=L N=10000 k=15 window=20 qset=v11@2e5b2c03 gold@15=... skill@15=... adapter=file:my-memory@0.3 verified=no standard=no
+recall/1.0 track=none band=L N=10000 k=15 window=20 qset=v11@2e5b2c03 writer=anthropic/claude-opus-5-5 gold@15=... skill@15=... chance@15=0.1449 floor@15=87.58 adapter=file:my-memory@0.3 verified=no standard=no
 ```
 
 **What a results file cannot carry.** It is one run, made outside the harness. So three things are always true of a scored file, and the result says each of them:
@@ -242,11 +242,13 @@ If you would rather not write a live adapter, the results file covers this case 
 Every run ends with one line:
 
 ```
-recall/1.0 track=none band=L N=10000 k=15 window=20 qset=v11@2e5b2c03 gold@15=87.58 skill@15=87.56 gold@1=59.66 gold@5=82.36 gold@10=85.89 gold@20=88.5 mrr@20=0.69 version=48.48 chance@15=0.1449 ceiling5=516 adapter=bm25@1.0 verified=yes standard=no
+recall/1.0 track=none band=L N=10000 k=15 window=20 qset=v11@2e5b2c03 writer=anthropic/claude-opus-5-5 gold@15=87.58 skill@15=87.56 gold@1=59.66 gold@5=82.36 gold@10=85.89 gold@20=88.5 mrr@20=0.69 version=48.48 chance@15=0.1449 floor@15=87.58 ceiling5=516 adapter=bm25@1.0 verified=yes standard=no
 ```
 
 - `gold@15` is the headline: the share of answerable questions with a gold record in the top 15. The k comes from the band, and the band from N.
 - `skill@15` is the same number with chance taken out. `chance@15` is what a random retriever scores.
+- `writer` is the model that wrote the question set, from its manifest. Two sets written by two models are two exams, so compare a number only with numbers from the same set.
+- `floor@15` is plain BM25 on the same pool and the same questions, run in the same invocation. The report prints it at every k and says how far above or below it the run is. (Above, the run is plain BM25 itself, so the two are equal.)
 - `version` is how often, for a fact that changed, the current record came first.
 - `verified` is `yes` only when the harness ran the system twice and got identical records.
 - `standard=no` today, for every result. The standard tracks are not built yet, and the current set is interim. The report lists the reasons.

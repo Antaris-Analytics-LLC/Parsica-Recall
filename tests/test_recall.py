@@ -321,9 +321,13 @@ class RunTests(unittest.TestCase):
 
     def test_result_line_has_every_field(self):
         res = self.run_with(_ScoredAdapter, verify=False)
-        for field in ("track=", "band=", "N=", "k=", "window=", "qset=", "gold@5=", "skill@5=", "mrr@10=",
-                      "version=", "chance@5=", "ceiling5=", "adapter=", "verified="):
+        for field in ("track=", "band=", "N=", "k=", "window=", "qset=", "writer=", "gold@5=", "skill@5=",
+                      "mrr@10=", "version=", "chance@5=", "floor@5=", "ceiling5=", "adapter=", "verified="):
             self.assertIn(field, res["result_line"])
+        parts = res["result_line"].split()
+        names = [p.split("=", 1)[0] for p in parts]
+        self.assertEqual(names.index("writer"), names.index("qset") + 1)
+        self.assertEqual(names.index("floor@5"), names.index("chance@5") + 1)
 
     def test_loader_takes_a_list_of_current_records(self):
         pool_ids = {rc.record_id(t) for t in self.texts}
@@ -449,6 +453,126 @@ class RunTests(unittest.TestCase):
             json.dump([{**make_question("q9", "x", "y", ["not in the corpus at all"])}], f)
         with self.assertRaises(rb.InputError):
             self.run_with(_V1Adapter, verify=False)
+
+
+class WriterAndFloorTests(unittest.TestCase):
+    """Every result names the set's writer and prints plain BM25 on the same pool and
+    questions beside its score (spec section 6, amended November 22, 2026)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        texts = [f"record number {i} about topic{i} with filler words here" for i in range(120)]
+        texts[7] = "the orchard harvest yielded seven hundred bushels of apples"
+        texts[20] = "the lighthouse keeper painted the stairs bright green"
+        texts[30] = "my cousin moved to oslo last spring"
+        texts[31] = "my cousin now teaches chemistry at a school in oslo"
+        self.texts = texts
+        self.cpath = os.path.join(self.tmp, "corpus.jsonl")
+        with open(self.cpath, "w", encoding="utf-8") as f:
+            for t in texts:
+                f.write(json.dumps(make_record(t)) + "\n")
+        # Counted by hand for plain BM25: q1's gold comes first; q2 shares no word with any
+        # record, so nothing comes back; q3 needs both of its records, which come first and
+        # second (the shorter one first), so it is complete at rank 1.
+        self.questions = [
+            make_question("q1", "how many bushels did the orchard harvest yield", "seven hundred bushels", [texts[7]]),
+            make_question("q2", "which zephyr quokka", "oslo", [texts[30]]),
+            make_question("q3", "where did my cousin move and what does my cousin teach", "chemistry",
+                          [texts[30], texts[31]], category="cross_session"),
+            {**make_question("q4", "what colour was the barn", "not mentioned", [], category="abstention",
+                             answer_type="abstention"), "gold_ids": [], "gold_hashes": {}},
+        ]
+        self.qpath = os.path.join(self.tmp, "questions.json")
+        with open(self.qpath, "w", encoding="utf-8") as f:
+            json.dump(self.questions, f)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def run_with(self, factory, quiet=True):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            res = rb.run_benchmark(factory, "test", self.qpath, self.cpath, verify=False, quiet=quiet)
+        return res, out.getvalue()
+
+    def write_manifest(self, model, questions_sha=None):
+        manifest = {"qset_version": "w-test", "status": "interim",
+                    "files": {"questions.json": questions_sha or rc.file_sha256(self.qpath),
+                              "corpus.jsonl": rc.file_sha256(self.cpath)},
+                    "lint": {"gates_passed": False, "failed_gates": ["GATE_CATEGORY_MINIMUMS"]},
+                    "model": model}
+        with open(os.path.join(self.tmp, "manifest.json"), "w", encoding="utf-8") as f:
+            json.dump(manifest, f)
+
+    def test_writer_label(self):
+        cases = [
+            (None, "unknown"),
+            ({}, "unknown"),
+            ({"requested": "claude-opus-5-5", "served": ["claude-opus-5-5"]}, "anthropic/claude-opus-5-5"),
+            ({"provider": "openai", "endpoint": rc.OPENAI_URL, "requested": "gpt-6.2-sol"}, "openai/gpt-6.2-sol"),
+            ({"provider": "openai", "endpoint": rc.OPENAI_URL + "/", "requested": "gpt-6.2-sol"}, "openai/gpt-6.2-sol"),
+            ({"provider": "google", "endpoint": rc.GOOGLE_URL, "requested": "gemini-4-hydrogen"},
+             "google/gemini-4-hydrogen"),
+            ({"provider": "openai", "endpoint": "http://localhost:11434/v1", "requested": "llama3.1:8b"},
+             "custom/llama3.1-8b"),
+            ({"provider": "openai", "endpoint": "http://localhost:8000/v1", "requested": "my model=v2"},
+             "custom/my-model-v2"),
+            ({"provider": "openai", "endpoint": "https://host.example/v1", "requested": "meta-llama/Llama-3.1-8B"},
+             "custom/meta-llama/Llama-3.1-8B"),
+        ]
+        for model, want in cases:
+            self.assertEqual(rc.writer_label(model), want, model)
+        self.assertIsNone(rc.writer_record(None))
+        self.assertEqual(rc.writer_record({"requested": "claude-opus-5-5"})["provider"], "anthropic")
+
+    def test_floor_counted_by_hand(self):
+        res, _ = self.run_with(_ScoredAdapter)
+        self.assertEqual(res["floor"], {"adapter": "bm25@1.0", "gold": {"1": 33.33, "5": 66.67, "10": 66.67}, "n": 3})
+        floor = rb.reference_floor(rb.Pool([make_record(t) for t in self.texts]), self.questions, rc.band_for(120))
+        self.assertEqual(floor, res["floor"])
+        h = res["headline"]
+        self.assertEqual(h["lift"], {k: round(h["recall"][k] - v, 2) for k, v in res["floor"]["gold"].items()})
+        self.assertIn(f"floor@5=66.67", res["result_line"])
+
+    def test_plain_bm25_sits_on_its_own_floor(self):
+        from parsica_recall.adapters import get_adapter
+        res, _ = self.run_with(lambda: get_adapter("bm25"))
+        self.assertEqual(res["floor"]["gold"], res["headline"]["recall"])
+        self.assertEqual(set(res["headline"]["lift"].values()), {0.0})
+
+    def test_the_writer_comes_from_a_matching_manifest(self):
+        res, _ = self.run_with(_ScoredAdapter)
+        self.assertIn("writer=unknown", res["result_line"])  # no manifest
+        self.write_manifest({"provider": "google", "endpoint": rc.GOOGLE_URL, "requested": "gemini-4-hydrogen",
+                             "served": ["gemini-4-hydrogen"], "started": "2026-11-22T05:00:00Z",
+                             "finished": "2026-11-22T06:00:00Z"})
+        res, out = self.run_with(_ScoredAdapter, quiet=False)
+        self.assertIn("qset=w-test@", res["result_line"])
+        self.assertIn("writer=google/gemini-4-hydrogen", res["result_line"])
+        self.assertEqual(res["manifest"]["qset"]["writer_record"]["served"], ["gemini-4-hydrogen"])
+        self.assertIn("Written by:   google/gemini-4-hydrogen", out)
+        self.assertIn("Floor: plain BM25 on this pool and these questions. This run is", out)
+        # a manifest that describes other files names no writer
+        self.write_manifest({"provider": "google", "requested": "gemini-4-hydrogen"}, questions_sha="0" * 64)
+        res, _ = self.run_with(_ScoredAdapter)
+        self.assertIn("writer=unknown", res["result_line"])
+        self.assertIsNone(res["manifest"]["qset"]["writer_record"])
+
+    def test_the_report_quotes_the_sets_own_reference_floor(self):
+        self.write_manifest({"requested": "claude-opus-5-5"})
+        sha8 = rc.file_sha256(self.qpath)[:8]
+        reference = {"runs": {"bm25": {"result_line": f"recall/1.0 track=none band=S N=120 k=5 window=10 "
+                                                      f"qset=w-test@{sha8} gold@5=66.67", "gold": {"5": 66.67}}}}
+        with open(os.path.join(self.tmp, "reference.json"), "w", encoding="utf-8") as f:
+            json.dump(reference, f)
+        _, out = self.run_with(_ScoredAdapter, quiet=False)
+        self.assertIn("The set's reference.json gives plain BM25 gold@5=66.67 on the N=120 pool", out)
+        reference["runs"]["bm25"]["result_line"] = "recall/1.0 k=5 qset=other@12345678"
+        with open(os.path.join(self.tmp, "reference.json"), "w", encoding="utf-8") as f:
+            json.dump(reference, f)
+        _, out = self.run_with(_ScoredAdapter, quiet=False)
+        self.assertNotIn("reference.json gives", out)
 
 
 class LintTests(unittest.TestCase):
@@ -691,6 +815,13 @@ class LiveTests(unittest.TestCase):
         safe = f"{__name__}.{adapter}".replace("/", "_").replace(".", "_")
         with open(os.path.join(self.tmp, f"recall_live_{safe}.json"), encoding="utf-8") as f:
             return json.load(f)
+
+    def test_live_mode_has_no_floor(self):
+        self.assertEqual(self.run_cli(), 0)
+        res = self.result()
+        self.assertIsNone(res["floor"])
+        self.assertNotIn("lift", res["headline"])
+        self.assertIn(f"floor@{res['headline']['k']}=n/a", res["result_line"])
 
     def test_live_end_to_end(self):
         self.assertEqual(self.run_cli("--verify"), 0)

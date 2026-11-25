@@ -4,7 +4,7 @@ A deterministic benchmark for the memory of AI agents. It asks one question: whe
 
 Recall scores retrieval only. The judge never calls a model. The window it scores is set by the size of the store, not by the system being tested. Every number can be re-derived from the per-question records a run writes.
 
-- Version: `1.0.0b2`, a beta. Recall stays in beta until it has been adequately used or peer reviewed.
+- Version: `1.0.0b3`, a beta. Recall stays in beta until it has been adequately used or peer reviewed.
 - Spec: `recall/1.0`, in [docs/spec.md](https://github.com/Antaris-Analytics-LLC/Parsica-Recall/blob/main/docs/spec.md). Where the spec and the code disagree, the spec wins.
 - Current question set: `v11`, interim, over a public synthetic pool of 10,000 records. The schema has 13 categories.
 - License: MIT.
@@ -13,7 +13,7 @@ Recall scores retrieval only. The judge never calls a model. The window it score
 
 Benchmark numbers are easy to move. Pick a friendlier k, a smaller pool, a kinder judge model or a stronger answer model, and the same system looks better. Recall is built so that none of those choices belong to the system under test:
 
-1. **The judge never calls a model.** Every score is an id match, a normalized phrase match or a token overlap. Two people running the same inputs get the same bytes.
+1. **The judge never calls a model.** The headline is an id match: a question scores when a record its answer key names is in the window. Two string checks, a normalized phrase match and a token overlap, print beside it as diagnostics and never headline a result. Two people running the same inputs get the same bytes.
 2. **k and N are set by the benchmark.** The window comes from the size of the pool, so every system at the same size is judged on the same window, and the chance line is printed beside every number.
 3. **Every result can be re-derived.** A run writes each question's full window, with ids, ranks and scores, and a manifest with the hashes of everything that went in.
 
@@ -38,8 +38,10 @@ From a clone, with nothing installed, `python -m parsica_recall run --adapter bm
 A run prints a report and writes `results/<qset>_<adapter>.json` in the folder you ran it from, plus two CSVs beside it: the recall curve, and the per-category and per-difficulty breakdowns. The last line of the report is the one-line result:
 
 ```
-recall/1.0 track=none band=L N=10000 k=15 window=20 qset=v11@2e5b2c03 gold@15=87.58 skill@15=87.56 gold@1=59.66 gold@5=82.36 gold@10=85.89 gold@20=88.5 mrr@20=0.69 version=48.48 chance@15=0.1449 ceiling5=516 adapter=bm25@1.0 verified=yes standard=no
+recall/1.0 track=none band=L N=10000 k=15 window=20 qset=v11@2e5b2c03 writer=anthropic/claude-opus-5-5 gold@15=87.58 skill@15=87.56 gold@1=59.66 gold@5=82.36 gold@10=85.89 gold@20=88.5 mrr@20=0.69 version=48.48 chance@15=0.1449 floor@15=87.58 ceiling5=516 adapter=bm25@1.0 verified=yes standard=no
 ```
+
+`writer=` names the model that wrote the question set, and `floor@15=` is plain BM25 on the same pool and the same questions, run by the harness in the same invocation (for plain BM25 itself it equals the score).
 
 `parsica-recall` with no arguments lists every command, and `parsica-recall <command> --help` prints its options.
 
@@ -113,9 +115,13 @@ The model can come from any of these, with your own key:
 | Anthropic | none (the default) | `pip install "parsica-recall[generate]"` |
 | OpenAI | `--provider openai` | `pip install "parsica-recall[openai]"` |
 | Google (the Gemini API) | `--provider google` | `pip install "parsica-recall[google]"` |
+| Azure (your Azure resource) | `--provider azure --base-url URL --model DEPLOYMENT` | `pip install "parsica-recall[openai]"` |
+| Amazon Bedrock (Claude) | `--provider bedrock --aws-region REGION` | `pip install "parsica-recall[bedrock]"` |
 | Any endpoint that speaks OpenAI's chat format, a local model included | `--provider openai --base-url URL --model NAME` | `pip install "parsica-recall[openai]"` |
 
 [docs/doc2query.md](https://github.com/Antaris-Analytics-LLC/Parsica-Recall/blob/main/docs/doc2query.md) covers each one: keys, default models, prices, and running on a model on your own machine.
+
+**Questions in the owner's own voice.** A memory store usually has an owner, and the questions that matter are the ones that person would send their assistant later. With `--people FILE --owner --forms --form-scheme 3 --prompts prompts/v7`, every question is written as the owner's own message, in a seeded shape (plain, casual, a request, a fragment, thinking aloud, now and then a long message) and a seeded form (open, how, when, a choice between two, two parts). `--common-answers owner` keeps a question whose answer is also found in other owners' records and scores it by record id alone. [docs/generation.md](https://github.com/Antaris-Analytics-LLC/Parsica-Recall/blob/main/docs/generation.md) section 6 has the details.
 
 Three things to know before you run it:
 
@@ -123,11 +129,15 @@ Three things to know before you run it:
 - **It sends some of your records to that provider.** The frozen prompt and the text of the sampled records go out, never more than half the store, under the provider's own terms (the guide says what each one's terms say; on Google, use a key from a project with billing turned on). A record with the shape of a credential or of personal data (keys, tokens, email addresses, phone numbers, street addresses, card numbers) is never sent. That screen reads shapes, not meaning: a personal fact written in plain words can be sent. A model on your own machine keeps everything on it.
 - **A set built from your store restates your memories.** Keep the set, its folder and its results out of public places. `--redact` makes results you can share.
 
+**A set you build is its own exam.** Its questions come from the model that wrote them, so two sets written by two models are two exams, even over the same records. Every result names its set by hash and its writer, and prints plain BM25 on the same set beside the score. Compare a number only with numbers from the same set. Public numbers come from the frozen public set, which nobody regenerates.
+
 ## How scoring works
 
 **Records and ids.** The corpus is a JSONL file of records. A record's id is the first 16 hex characters of the SHA-256 of its normalized text, so the same text gets the same id in any store. Normalization is one function (`recall_common.normalize`) shared by the runner, the linter and the generator: Unicode NFKC, lowercase, strip everything that is not a letter, digit or space, collapse whitespace.
 
 **Gold tier (the headline).** Every question lists `gold_ids`, the records that count as a correct retrieval. A question scores at k when a gold record sits in the top k of the window. Questions whose answer lives in several records list them all.
+
+**What the id match does not see.** It credits a system only when it returns the record it was given, or that record's id. A store that rewrites, merges or summarizes its memories and cannot carry the id through is scored as if it lost the record, even when what it returned holds the answer. The two string tiers are where that shows: on v11 the same plain BM25 run scores 87.58 by id, 73.77 by phrase and 92.33 by token overlap at k = 15. The rule is deterministic. It is not neutral toward how a system stores its memories.
 
 **Version tier.** For a question about a fact that changed, `must_rank_first` names the current record. The version tier asks whether the first gold record in the window is a current one. It counts an item only when every one of its gold records carries a `ts`, because without one nothing in the pool tells any system which record is current. The harness never invents a timestamp.
 
@@ -250,6 +260,8 @@ Two reference adapters on the public half (N = 10,000, band L, window 20, headli
 
 Chance at k = 15 is 0.14%. The oracle is 100 from k = 5 on, the check that the set and the scorer agree; its gold@1 is under 100 because an item with more than one gold record cannot be complete at k = 1. Plain BM25 at 87.58 gold@15 is the floor a system has to clear to be interesting on this set.
 
+**How much room the floor leaves.** Plain BM25 scores 97 to 100 at k = 15 in seven of the twelve answerable categories. Of the 81 questions it misses there, 72 are in vocabulary_gap (46.7), paraphrase_recall (76.0) and cross_session (75.9). At k = 1 there is more room: 59.66 against a ceiling of 91.10. At the headline k most of this set cannot tell a strong system from plain BM25, so read the per-category table and gold@1 beside the headline.
+
 ### The sealed half
 
 A sealed half exists: 727 questions over the same pool, split from the same build by seed. It is never published. The public manifest commits to it by hash, so when it is used, anyone holding the public half can check that it is the half that was committed to:
@@ -284,7 +296,8 @@ Every release gate is code with a pass or a fail. Whether a question set may bac
 
 - **Standard tracks** (1k, 10k, 30k, 50k). The pool's first 10,000 records are here; a larger pool and the runner's track mode come later. Until then every result prints `standard=no`.
 - **Sealed scoring.** The sealed half exists and is committed to by hash. Nobody is scoring against it yet.
-- **Fullstack mode**, where an answer model reads the window. It is on the roadmap, and spec section 11 fixes its rules.
+- **Fullstack mode**, where an answer model reads the window. It is on the roadmap, and spec section 11 fixes its rules. When it is built it will also record what the answer model spends: its input and output tokens.
+- **Token efficiency.** The size of what a system returns for each question, counted in tokens with no model, so it stays deterministic. It is on the beta roadmap. Whether it is scored or only reported, and which tokenizer counts, are not decided.
 - **Other providers for the pool generator.** The question builder runs on Anthropic, OpenAI, Google or an endpoint of your own; `generate-pool` runs on Anthropic only.
 
 ## Files
@@ -293,7 +306,7 @@ Every release gate is code with a pass or a fail. Whether a question set may bac
 - `parsica_recall_lint_spec.json`: the lint's rules and gates
 - `data/v11/`: the current question set, public half
 - `data/pool-v1/`: the public pool and its generation record
-- `prompts/`: the question builder's frozen prompts, one per category; `prompts/pool/`: the pool generator's
+- `prompts/`: the question builder's frozen prompts, one per category; `prompts/v7/`: the same, written for the owner's own voice (`--people --owner --forms`); `prompts/pool/`: the pool generator's
 - `scenarios/`: the pool's persona files
 - `docs/spec.md`: the Recall 1.0 specification
 - `docs/adapting.md`: running Recall on any memory system

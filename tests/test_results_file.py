@@ -106,6 +106,13 @@ class ScoreTests(ResultsFileCase):
         self.assertEqual(adapter["version"]["results_sha256"], rc.file_sha256(self.rpath))
         self.assertEqual((adapter["version"]["version"], adapter["version"]["engine_class"]), ("1.0", "lexical"))
         self.assertIn("adapter=file:bm25-copy@1.0 verified=no standard=no", res["result_line"])
+        # a scored file is file mode, so the harness runs plain BM25 beside it; this file is a
+        # copy of plain BM25's own run, so it sits exactly on the floor
+        self.assertEqual(res["floor"]["gold"], ran["headline"]["recall"])
+        self.assertEqual(set(res["headline"]["lift"].values()), {0.0})
+        k = res["headline"]["k"]
+        self.assertIn(f"floor@{k}={res['floor']['gold'][str(k)]}", res["result_line"])
+        self.assertIn("writer=unknown", res["result_line"])  # this set has no manifest
 
     def test_plain_ids_object_hits_and_text_hits_all_score(self):
         res = self.score(self.all_lines(q2=[{"id": self.gold["q2"]}], q3=[{"text": self.texts[40]}]))
