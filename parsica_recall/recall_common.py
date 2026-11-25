@@ -29,7 +29,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 # ---------------------------------------------------------------------------
 
 SPEC_VERSION = "recall/1.0"
-HARNESS_VERSION = "1.0.0b2"
+HARNESS_VERSION = "1.0.0b3"
 CURRENT_QSET = "v11"          # since October 22, 2026
 SEALED_SUFFIX = "-sealed"     # a split set's sealed half is named after its public half: v11 and v11-sealed
 
@@ -39,6 +39,44 @@ def is_current_qset(version) -> bool:
     sealed half, which the generator names with SEALED_SUFFIX (docs/generation.md section 9).
     The two halves are one set, split by seed, so GATE_VERSIONS_MATCH takes either."""
     return version in (CURRENT_QSET, CURRENT_QSET + SEALED_SUFFIX)
+
+
+# ---------------------------------------------------------------------------
+# Who wrote a question set
+# ---------------------------------------------------------------------------
+
+# The providers' own addresses. The question builder sends its OpenAI and Google calls
+# only here unless --base-url names another endpoint, and a result names an OpenAI-format
+# set written anywhere else "custom".
+OPENAI_URL = "https://api.openai.com/v1"
+GOOGLE_URL = "https://generativelanguage.googleapis.com/"
+_LABEL_UNSAFE = re.compile(r"[^A-Za-z0-9._/-]+")
+
+
+def writer_label(model) -> str:
+    """The writer of a question set as one token of the result line: provider/model, from
+    the "model" block of the set's manifest (spec section 6). "unknown" without one. A set
+    built before the providers has no provider and was written on Anthropic; one written
+    through an OpenAI-format endpoint other than OpenAI's own is "custom". Anything that
+    could break the line (a space, =) is written as a dash, as a scored file's name is."""
+    if not isinstance(model, dict) or not model.get("requested"):
+        return "unknown"
+    provider = str(model.get("provider") or "anthropic")
+    endpoint = model.get("endpoint")
+    if provider == "openai" and endpoint and str(endpoint).rstrip("/") != OPENAI_URL.rstrip("/"):
+        provider = "custom"
+    label = _LABEL_UNSAFE.sub("-", f"{provider}/{model['requested']}").strip("-")
+    return label or "unknown"
+
+
+def writer_record(model) -> Optional[Dict[str, Any]]:
+    """What a result keeps of the writer beside its label: the provider, the model asked
+    for and the models that answered, the endpoint, and when the set was written."""
+    if not isinstance(model, dict) or not model.get("requested"):
+        return None
+    return {"provider": model.get("provider") or "anthropic", "requested": model.get("requested"),
+            "served": model.get("served"), "endpoint": model.get("endpoint"),
+            "started": model.get("started"), "finished": model.get("finished")}
 
 
 # ---------------------------------------------------------------------------
@@ -383,6 +421,18 @@ MULTI_RECORD_CATEGORIES = VERSION_CATEGORIES + ALL_GOLD_CATEGORIES
 
 # Categories whose answer is, by design, not written verbatim in the gold record.
 NON_VERBATIM_CATEGORIES = ("vocabulary_gap", "implicit_preference")
+
+# An optional field of a question. True says its answer is also found in records outside gold,
+# so the question is scored by record id alone: the lint notes the leak and holds nothing, and
+# the runner leaves the question out of the exact tier (docs/generation.md section 6). No
+# released set carries it; a question without it is read exactly as before.
+COMMON_ANSWER = "common_answer"
+
+# An optional field of a question. True says it offers its answer as one of two possibilities ("did I
+# say left or right?"), on purpose: the lint notes the answer in the question and holds nothing for it
+# (docs/generation.md section 6). Retrieval and the exact tier read it as any other question; a
+# fullstack scorer will have to treat its answer as a choice between the two. No released set carries it.
+CHOICE = "choice"
 
 
 def current_ids(must_rank_first) -> List[Any]:

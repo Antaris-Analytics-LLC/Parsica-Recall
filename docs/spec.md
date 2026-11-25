@@ -8,7 +8,7 @@ Parsica Recall measures whether a memory system surfaces the right record for a 
 
 Recall answers one question: given a store of memories and a question whose answer lives in one or a few of them, does the system put those records in the window an agent would actually read? It scores retrieval, not answering. The answer model is a separate, optional stage (fullstack mode) and never the judge.
 
-**Promise 1, the judge never calls a model.** Every score is a function of the question file, the corpus and the returned records: id match, normalized substring, token overlap. Two people running the same inputs get the same bytes. An LLM judge is not permitted in any mode of this benchmark; the only model allowed anywhere is the answer model in fullstack mode, and it is the thing under test, not the referee.
+**Promise 1, the judge never calls a model.** Every score is a function of the question file, the corpus and the returned records. The headline is an id match: a question scores when a record its answer key names is in the window. A normalized substring match and a token overlap are reported beside it as diagnostics and never headline a result (amended November 22, 2026). Two people running the same inputs get the same bytes. An LLM judge is not permitted in any mode of this benchmark; the only model allowed anywhere is the answer model in fullstack mode, and it is the thing under test, not the referee.
 
 **Promise 2, k and N are set by the benchmark.** The retrieval window k is a property of the consumer (how many records an agent prompt can carry), and the realistic window grows with the store, so the benchmark fixes k per pool-size band and every system at that size reports the same k. The corpus size N is a property of the task, so it is either a published standard size (padded with a published distractor set) or stated in large print next to every number. A system does not get to pick the k that flatters it or the N that makes chance look like skill.
 
@@ -64,10 +64,13 @@ The corpus and the questions are separate files, joined by record ids. An id is 
 
 Rules for the fields that carry the score:
 
-- `gold_ids` lists every record that counts as a correct retrieval. One id for single-fact questions; several for multi-record categories (cross\_session, knowledge\_update, correction\_handling, recency\_preference). The runner refuses a question whose gold ids are not all present in the pool.
+- `gold_ids` lists every record that counts as a correct retrieval. For a single-fact question, the record that states the fact and any other that states it too (below); for the multi-record categories (cross\_session, knowledge\_update, correction\_handling, recency\_preference), the records the question needs together. The runner refuses a question whose gold ids are not all present in the pool.
 - `must_rank_first`, when set, names the gold record that has to be the first gold in the window for the question to score on the version tier (the current version of a changed fact). It may be a list when the current version exists as several verbatim copies in the pool; any of them first scores. Null elsewhere. The version tier counts an item only when every one of its gold records carries a `ts` (from the corpus in file mode, from `record_ts()` in live mode), because nothing else in the pool can tell a system which record is current; with no such item the tier is n/a, and the harness never invents a timestamp (amended October 19, 2026).
 - `gold_hashes` pins the gold text at generation time. A live store that has rewritten or enriched the record still matches by id; the hash is what tells you the text drifted, and the run reports the count.
 - `answer` and `acceptable_answers` are used only by the exact tier and by fullstack mode. They are not how retrieval is judged.
+- A single-fact question may have several gold ids. Each is a record that states the fact, and any one of them in the window counts: a record's near copies always join it, and under `--common-answers` so does a record of the same conversation that the writer confirms gives the answer (docs/generation.md section 6).
+- `common_answer` is optional. True says the answer is also found in records outside gold, so the question is scored by record id alone: it is in the gold tier and the family tier and not in the exact tier, and the lint notes the leak instead of failing the question. The question builder sets it under `--common-answers owner`, for an answer that is otherwise found only in other owners' records (docs/generation.md section 6). No released set carries it, and a question without it is read as before (added November 23, 2026).
+- `choice` is optional. True says the question offers its answer as one of two options joined by "or", on purpose ("did I say left or right?"), so the lint notes the answer in the question instead of failing it. Retrieval and the exact tier read the question as any other; a fullstack scorer will have to treat its answer as a choice between the two. The question builder sets it under `--forms` (docs/generation.md section 6). No released set carries it (added November 23, 2026).
 - A record's text is not in the question file; it lives in the corpus once.
 
 **Categories.** There are thirteen (`recall_common.CATEGORIES`). Abstention questions carry `gold_ids: []` and are scored by the abstention rule (section 5), and the four multi-record categories must have at least two gold ids or the linter reclassifies them. Minimum counts per category for the standard track are in section 9.
@@ -113,7 +116,7 @@ Every question produces a small set of per-question facts, and every reported nu
 | Gold | `gold_rank` | Position (0-based) of the first returned record whose id is in `gold_ids`; null if none in the window | The retrieval headline |
 | Gold, all | `gold_all_rank` | Position by which every id in `gold_ids` has appeared; null if not all appear | Multi-record categories |
 | Version | `version_ok` | True when the first gold in the window is one of the `must_rank_first` records; only for questions that set it, and counted only where every gold record carries a `ts` | The "current record first" number |
-| Exact | `exact_rank` | Position of the first returned record whose normalized text contains the normalized answer or an acceptable variant | Diagnostic; the fullstack scorer's input |
+| Exact | `exact_rank` | Position of the first returned record whose normalized text contains the normalized answer or an acceptable variant; a question that carries `common_answer` is left out of this tier | Diagnostic; the fullstack scorer's input |
 | Family | `family_rank` | Position of the first record with token overlap >= 0.6 against any gold text, by multiplicity, gold as denominator | Diagnostic only, never a headline |
 | Abstention | `abstained` | See below | The abstention table |
 
@@ -182,8 +185,10 @@ A private corpus can stand in for the distractor file in a private track: real a
 **What a standard result must contain.** The full question set (no subsetting; a subset run is labeled partial), every category in the per-category table, every k in the band's set with chance and skill for each, MRR at the band's window (gold tier), the version-tier rate, the k ceiling at 5% and 10%, N and G statistics, and the manifest (section 8). The one-line form for leaderboards and journals is fixed too:
 
 ```
-recall/1.0 track=10k band=L N=10000 k=15 window=20 qset=v11@a1b2c3d4 gold@15=89.3 skill@15=89.2 gold@1=61.0 gold@5=78.1 gold@10=85.0 gold@20=91.2 mrr@20=0.712 version=80.0 chance@15=0.15 ceiling5=500 adapter=my-store@0.3.1 verified=yes standard=yes
+recall/1.0 track=10k band=L N=10000 k=15 window=20 qset=v11@a1b2c3d4 writer=anthropic/claude-opus-5-5 gold@15=89.3 skill@15=89.2 gold@1=61.0 gold@5=78.1 gold@10=85.0 gold@20=91.2 mrr@20=0.712 version=80.0 chance@15=0.15 floor@15=87.6 ceiling5=500 adapter=my-store@0.3.1 verified=yes standard=yes
 ```
+
+**The writer and the floor** (amended November 22, 2026). `writer=` names who wrote the question set: the provider and the model the set's manifest records, as `provider/model` (`anthropic/claude-opus-5-5`); a set written through an OpenAI-format endpoint other than OpenAI's own is `custom/model`, a set built before the providers were recorded was written on Anthropic, and a set without a matching manifest is `unknown`. `floor@k=` is plain BM25, the reference adapter, run by the harness on the same pool and the same questions in the same invocation, never read from a file, scored by the same headline rule at the headline k; the result also records the floor at every k of the band and the headline's lift over it. Live mode cannot see the pool's texts, so its line says `floor@k=n/a`. Two sets written by two models are two exams, even over the same records, so a number is compared only with numbers from the same set, and the floor shows how much of a score plain lexical search already reaches on that set.
 
 A line missing any field is not a Recall result. Three fields appear only when they apply: `spread@k=` after an unstable double run, `above_ceiling=k` when the headline k is invalid for the measured N and G, and `pool=unknown` or `pool=changed` on a live result. A live result without a pool size prints no k, chance or ceiling and lists gold at every k of the widest band instead.
 
@@ -217,13 +222,15 @@ A Recall result is a claim about a system; verification is what lets someone els
 | Field | Value |
 | --- | --- |
 | `harness_version` | Recall version, the git commit of the runner when it ran from a checkout, and `source_sha256`, the SHA-256 of the harness's own source files |
-| `qset` | question-set version plus SHA-256 of the file |
+| `qset` | question-set version plus SHA-256 of the file; `writer`, the label `writer=` prints, and `writer_record`, the provider, the model requested and the models served, the endpoint, and when the set was written, from the set's own manifest (amended November 22, 2026) |
 | `corpus` | SHA-256 of corpus.jsonl, or `live` plus N and the SHA-256 of the sorted id list; `id_scheme`, `content` or `store` |
 | `distractors` | SHA-256 of the distractor file and how many were taken, or none |
 | `adapter` | module path, class, `version()` string |
 | `runtime` | Python version, platform, `PYTHONHASHSEED` |
 | `params` | mode, track, band and window, extra passes run |
 | `records_hash` | SHA-256 of the per-question records with timing fields removed |
+
+Beside the manifest, a file-mode result records `floor`: plain BM25's gold tier at every k of the band on the same pool and questions, with the reference adapter's version and the number of answerable questions, and the headline records its `lift` over it at each k (section 6). The floor is a measurement, not an input, so the manifest's hash does not cover it (amended November 22, 2026).
 
 **The double run.** `--verify` runs the whole benchmark twice in one invocation and compares `records_hash`. Equal means the system is deterministic under this harness and the result is marked verified. Unequal means the result is marked unstable, the differing question ids are listed, and the headline is reported as the mean of the two runs with the spread beside it. Non-determinism is not a failure of the benchmark; hiding it would be. The double run covers the base run. The extra passes (section 7) run once, on a fresh adapter after the base run, and carry the base run's verification status; when the base run is unstable the pass differences include run-to-run noise and the report says so. A standard result needs a verified base run with both passes run.
 
@@ -273,6 +280,8 @@ Two more rules apply to anything that ships in the public repo, written fresh fo
 How the generator carries out these steps is in [docs/generation.md](generation.md), and its frozen prompts are in [prompts/](../prompts/).
 
 *Amended November 21, 2026.* The generator model may come from any provider: Anthropic's API, OpenAI's, Google's Gemini API, or an endpoint that speaks OpenAI's chat format. Step 4's record of the generator model then also names the provider and the endpoint. Nothing else changes: the same frozen prompts, the same checks and lint, and the same oracle check apply to every provider's items, and a set is scored the same way whoever wrote it.
+
+*Amended November 22, 2026.* The generator model may also run on Azure, which takes OpenAI's request, or on Amazon Bedrock, which takes Anthropic's; step 4 then records `azure` or `bedrock` as the provider, with the endpoint. The writer that step 4 records is named on every result line (`writer=`, section 6), and the manifest's hash, which every result records, covers the model, the prompts and the seed. A set is its writer's exam: two writers over the same records give two sets, and their numbers are not compared with each other. Step 5's floor is also printed beside every file-mode result, run on the same pool and the same questions in the same invocation (section 6).
 
 **Versioning.** Question sets are immutable once published. A fix is a new version; results name the version; the comparison tool refuses to compare across versions. v11 is the first published set under this spec.
 

@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import test_generate as tg  # noqa: E402  (the shared helpers: toolboxes, the fake writers, GenTestCase)
 
 gq = tg.gq
+from parsica_recall import recall_common as rc  # noqa: E402
 ns = types.SimpleNamespace
 
 # Key-shaped values, assembled from parts so no whole key sits in this file.
@@ -146,7 +147,7 @@ class ChoiceTests(unittest.TestCase):
 
     def test_what_a_choice_refuses(self):
         cases = [
-            (dict(provider="azure"), "--provider takes one of"),
+            (dict(provider="mistral"), "--provider takes one of"),
             (dict(provider="google", model_id="m", base_url="https://x.example.com"), "goes with --provider openai"),
             (dict(provider="openai", base_url="https://x.example.com"), "--base-url needs --model"),
             (dict(provider="openai", model_id="m", base_url="localhost:11434"), "an http:// or https:// URL"),
@@ -352,6 +353,139 @@ class GoogleModelTests(unittest.TestCase):
         self.assertEqual(str(cm.exception), "ClientError")
 
 
+class AzureAndBedrockChoiceTests(unittest.TestCase):
+    def test_azure_is_openais_request_at_your_resource_and_bedrock_anthropics_in_your_region(self):
+        a = gq.ModelChoice("azure", "astra-deploy", base_url=AZURE_URL + "/")
+        self.assertEqual((a.model_id, a.endpoint, a.max_tokens, a.effort, a.custom, a.claude_request, a.price),
+                         ("astra-deploy", AZURE_URL, 32000, "high", False, False, None))
+        self.assertEqual(a.fields(), {"provider": "azure", "endpoint": AZURE_URL, "effort": "high", "max_tokens": 32000})
+        b = gq.ModelChoice("bedrock", aws_region="us-west-2", price_in=2, price_out=10)
+        self.assertEqual((b.model_id, b.endpoint, b.max_tokens, b.effort, b.claude_request),
+                         ("anthropic.claude-sonnet-5-5", "https://bedrock-mantle.us-west-2.api.aws/anthropic", 16000,
+                          "high", True))
+        self.assertEqual(b.price, (2, 10, 2, 2, 2))
+        # a deployment or a Bedrock id may carry another provider's name, which is no mistake there
+        self.assertEqual(gq.ModelChoice("azure", "gpt-6.2-astra", base_url=AZURE_URL).model_id, "gpt-6.2-astra")
+        self.assertEqual(gq.ModelChoice("bedrock", "us.anthropic.claude-fable-5-2", aws_region="us-west-1").model_id,
+                         "us.anthropic.claude-fable-5-2")
+
+    def test_bedrock_takes_its_region_from_the_flag_or_the_environment(self):
+        with mock.patch.dict(os.environ, {"AWS_REGION": "eu-central-1"}):
+            self.assertEqual(gq.ModelChoice("bedrock").region, "eu-central-1")
+            self.assertEqual(gq.ModelChoice("bedrock", aws_region="us-east-1").region, "us-east-1")
+        bare = {k: v for k, v in os.environ.items() if k not in ("AWS_REGION", "AWS_DEFAULT_REGION")}
+        with mock.patch.dict(os.environ, bare, clear=True), self.assertRaises(gq.GenerateError) as cm:
+            gq.ModelChoice("bedrock")
+        self.assertIn("--aws-region", str(cm.exception))
+
+    def test_what_they_refuse(self):
+        cases = [
+            (dict(provider="azure", model_id="x", base_url="https://" + "evil.example.com/openai/v1"), "Azure host"),
+            (dict(provider="azure", model_id="x", base_url="http://" + "jr.openai.azure.com/openai/v1"), "https only"),
+            (dict(provider="azure", model_id="x", base_url="https://" + "jr.openai.azure.com/v2"), "/openai/v1"),
+            (dict(provider="azure", model_id="x"), "needs --base-url"),
+            (dict(provider="azure", base_url=AZURE_URL), "name of your deployment"),
+            (dict(provider="azure", model_id="x", base_url=AZURE_URL, max_output_tokens=5), "--max-output-tokens"),
+            (dict(provider="bedrock", aws_region="West 2"), "region's name"),
+            (dict(provider="bedrock", aws_region="us-west-2", base_url="https://" + "x.example.com/v1"), "--base-url"),
+            (dict(provider="openai", aws_region="us-west-2"), "--aws-region goes with --provider bedrock"),
+        ]
+        for kw, words in cases:
+            with self.subTest(kw=kw), self.assertRaises(gq.GenerateError) as cm:
+                gq.ModelChoice(**kw)
+            self.assertIn(words, str(cm.exception))
+
+
+class AzureModelTests(unittest.TestCase):
+    def test_the_request_is_openais_and_goes_to_your_resource_with_the_key(self):
+        clients, sent = [], []
+        p = prompt()
+        with mock.patch.dict(sys.modules, {"openai": fake_openai(clients, sent)}), \
+                mock.patch.dict(os.environ, {"AZURE_OPENAI_API_KEY": AZURE_KEY}):
+            model = gq.make_model(gq.ModelChoice("azure", "astra-deploy", base_url=AZURE_URL))
+            self.assertIsInstance(model, gq.OpenAIModel)
+            model.call("direct_recall_user", p, "the records", "sha256:x")
+        self.assertEqual(clients, [{"base_url": AZURE_URL, "api_key": AZURE_KEY, "max_retries": 2,
+                                    "default_headers": {"api-key": AZURE_KEY}}])
+        self.assertEqual(sent, [{
+            "model": "astra-deploy",
+            "messages": [{"role": "system", "content": p.text}, {"role": "user", "content": "the records"}],
+            "response_format": {"type": "json_schema", "json_schema": {
+                "name": "recall_direct_recall_user", "schema": p.schema, "strict": True}},
+            "reasoning_effort": "high", "max_completion_tokens": 32000, "store": False}])
+
+    def test_the_named_variable_gives_the_key_and_no_error_quotes_it(self):
+        clients = []
+        with mock.patch.dict(sys.modules, {"openai": fake_openai(clients, [])}), \
+                mock.patch.dict(os.environ, {KEY_VAR: AZURE_KEY}):
+            gq.make_model(gq.ModelChoice("azure", "d", base_url=AZURE_URL, api_key_env=KEY_VAR)).connect()
+        self.assertEqual(clients[0]["api_key"], AZURE_KEY)
+        fail = RuntimeError(f"401 for key {AZURE_KEY}")
+        with mock.patch.dict(sys.modules, {"openai": fake_openai([], [], create_fail=fail)}), \
+                mock.patch.dict(os.environ, {"AZURE_OPENAI_API_KEY": AZURE_KEY}), \
+                self.assertRaises(gq.GenerateError) as cm:
+            gq.make_model(gq.ModelChoice("azure", "d", base_url=AZURE_URL)).call("direct_recall_user", prompt(), "u", "s")
+        self.assertNotIn(AZURE_KEY, str(cm.exception))
+        self.assertIn("[the key]", str(cm.exception))
+
+    def test_a_missing_key_says_which_variable(self):
+        bare = {k: v for k, v in os.environ.items() if k != "AZURE_OPENAI_API_KEY"}
+        with mock.patch.dict(sys.modules, {"openai": fake_openai([], [])}), \
+                mock.patch.dict(os.environ, bare, clear=True), self.assertRaises(gq.GenerateError) as cm:
+            gq.make_model(gq.ModelChoice("azure", "d", base_url=AZURE_URL)).connect()
+        self.assertIn("AZURE_OPENAI_API_KEY", str(cm.exception))
+
+
+class BedrockModelTests(unittest.TestCase):
+    def test_the_request_is_anthropics_through_the_bedrock_client(self):
+        clients, sent = [], []
+        p = prompt()
+        with mock.patch.dict(sys.modules, {"anthropic": fake_anthropic(clients, sent)}):
+            model = gq.make_model(gq.ModelChoice("bedrock", aws_region="us-west-2"))
+            self.assertIsInstance(model, gq.BedrockModel)
+            reply = model.call("direct_recall_user", p, "the records", "sha256:x")
+        # the SDK finds the AWS credentials itself; the address is pinned to the one recorded
+        self.assertEqual(clients, [{"aws_region": "us-west-2",
+                                    "base_url": "https://bedrock-mantle.us-west-2.api.aws/anthropic"}])
+        self.assertEqual(sent, [{
+            "model": "anthropic.claude-sonnet-5-5", "max_tokens": 16000, "system": gq.system_blocks(p),
+            "messages": [{"role": "user", "content": "the records"}],
+            "output_config": {"effort": "high", "format": {"type": "json_schema", "schema": p.schema}}}])
+        self.assertEqual((reply.model, reply.stop_reason, reply.cache_write, reply.cache_write_1h, reply.sdk),
+                         ("anthropic.claude-sonnet-5-5", "end_turn", 3000, 3000, "anthropic 2.12.0"))
+
+    def test_a_bedrock_api_key_from_the_named_variable_and_no_error_quotes_it(self):
+        clients = []
+        with mock.patch.dict(sys.modules, {"anthropic": fake_anthropic(clients, [])}), \
+                mock.patch.dict(os.environ, {KEY_VAR: BEDROCK_KEY}):
+            gq.make_model(gq.ModelChoice("bedrock", aws_region="us-west-2", api_key_env=KEY_VAR)).connect()
+        self.assertEqual(clients[0]["api_key"], BEDROCK_KEY)
+        fail = RuntimeError(f"denied for {BEDROCK_KEY}")
+        with mock.patch.dict(sys.modules, {"anthropic": fake_anthropic([], [], client_fail=fail)}), \
+                mock.patch.dict(os.environ, {KEY_VAR: BEDROCK_KEY}), self.assertRaises(gq.GenerateError) as cm:
+            gq.make_model(gq.ModelChoice("bedrock", aws_region="us-west-2", api_key_env=KEY_VAR)).connect()
+        self.assertNotIn(BEDROCK_KEY, str(cm.exception))
+
+    def test_a_missing_package_or_an_sdk_too_old_says_what_to_do(self):
+        with mock.patch.dict(sys.modules, {"anthropic": None}), self.assertRaises(gq.GenerateError) as cm:
+            gq.make_model(gq.ModelChoice("bedrock", aws_region="us-west-2")).connect()
+        self.assertIn('"parsica-recall[bedrock]"', str(cm.exception))
+        with mock.patch.dict(sys.modules, {"anthropic": fake_anthropic([], [], mantle=False)}), \
+                self.assertRaises(gq.GenerateError) as cm:
+            gq.make_model(gq.ModelChoice("bedrock", aws_region="us-west-2")).connect()
+        self.assertIn("no Bedrock client", str(cm.exception))
+
+    def test_check_api_says_ok_or_the_error_class_only(self):
+        with mock.patch.dict(sys.modules, {"anthropic": fake_anthropic([], [])}):
+            self.assertEqual(gq.check_api(choice=gq.ModelChoice("bedrock", aws_region="us-west-2")),
+                             "anthropic.claude-sonnet-5-5")
+        fail = RuntimeError(f"AccessDenied with {BEDROCK_KEY}")
+        with mock.patch.dict(sys.modules, {"anthropic": fake_anthropic([], [], create_fail=fail)}), \
+                self.assertRaises(gq.GenerateError) as cm:
+            gq.check_api(choice=gq.ModelChoice("bedrock", aws_region="us-west-2"))
+        self.assertEqual(str(cm.exception), "RuntimeError")
+
+
 class CostTests(unittest.TestCase):
     def test_a_record_is_priced_by_its_own_price_or_the_table(self):
         rec = {"model": "gpt-6.2-sol", "input_tokens": 300, "output_tokens": 500, "cache_creation_input_tokens": 100,
@@ -381,7 +515,58 @@ def sdk_writer(prompts):
         return gemini_response(parts=[ns(text=items(category, kw["contents"]), thought=None)], prompt_tokens=20_000,
                                cached=0, candidates=2_000, thoughts=1_000)
 
-    return {"openai": openai, "google": google}
+    def bedrock(kw):
+        category = category_of[kw["system"][0]["text"]]
+        return claude_response(text=items(category, kw["messages"][0]["content"]), model=kw["model"])
+
+    return {"openai": openai, "google": google, "bedrock": bedrock}
+
+
+def claude_response(text='{"items": []}', model="anthropic.claude-sonnet-5-5", stop="end_turn", input_tokens=900,
+                    output_tokens=700, written=3_000, read=0):
+    """A Messages API response as the anthropic SDK returns it, on Bedrock as anywhere."""
+    usage = ns(input_tokens=input_tokens, output_tokens=output_tokens, cache_creation_input_tokens=written,
+               cache_read_input_tokens=read, cache_creation=ns(ephemeral_1h_input_tokens=written))
+    return ns(model=model, stop_reason=stop, content=[ns(type="text", text=text)], usage=usage)
+
+
+def fake_anthropic(clients, sent, respond=None, create_fail=None, client_fail=None, mantle=True):
+    """A stand-in for the anthropic package as the Bedrock adapter reads it:
+    AnthropicBedrockMantle(**kw) records its arguments, and messages.create(**kw) records the
+    request and answers with respond(kw). mantle=False is an SDK too old for Bedrock's client."""
+    mod = types.ModuleType("anthropic")
+    mod.__version__ = "2.12.0"
+
+    class AnthropicError(Exception):
+        pass
+
+    class APIError(AnthropicError):
+        pass
+
+    class Messages:
+        def create(self, **kw):
+            sent.append(kw)
+            if create_fail is not None:
+                raise create_fail
+            return respond(kw) if respond else claude_response(model=kw["model"])
+
+    class AnthropicBedrockMantle:
+        def __init__(self, **kw):
+            if client_fail is not None:
+                raise client_fail
+            clients.append(kw)
+            self.messages = Messages()
+
+    mod.AnthropicError, mod.APIError = AnthropicError, APIError
+    if mantle:
+        mod.AnthropicBedrockMantle = AnthropicBedrockMantle
+    return mod
+
+
+# Key-shaped values for Azure and Bedrock, assembled from parts like the others.
+AZURE_KEY = "".join(("4f1c", "9e2b7a6d", "3c8e5f0a", "1b4d7e9c", "2a6f8b3d"))
+BEDROCK_KEY = "ABSK" + "QmVkcm9ja0Fw" + "aUtleS10ZXN0"
+AZURE_URL = "https://" + "jr-test" + ".openai.azure.com/openai/v1"
 
 
 class BuildTests(tg.GenTestCase):
@@ -398,9 +583,48 @@ class BuildTests(tg.GenTestCase):
                                model_id=choice.model_id, choice=choice, quiet=True, **kw)
 
     def sdk(self, provider):
-        if provider == "openai":
+        if provider in ("openai", "azure"):
             return {"openai": fake_openai([], [], respond=self.respond["openai"])}
+        if provider == "bedrock":
+            return {"anthropic": fake_anthropic([], [], respond=self.respond["bedrock"])}
         return fake_google([], [], respond=self.respond["google"])
+
+    def test_a_set_built_on_azure_and_on_bedrock_records_them_and_replays(self):
+        bedrock_url = "https://bedrock-mantle.us-west-2.api.aws/anthropic"
+        for provider, choice, endpoint, cache in (
+                ("azure", gq.ModelChoice("azure", "astra-deploy", base_url=AZURE_URL, price_in=8, price_out=40),
+                 AZURE_URL, None),
+                ("bedrock", gq.ModelChoice("bedrock", aws_region="us-west-2", price_in=2, price_out=10),
+                 bedrock_url, gq.SYSTEM_CACHE)):
+            with self.subTest(provider=provider):
+                with mock.patch.dict(sys.modules, self.sdk(provider)), \
+                        mock.patch.dict(os.environ, {"AZURE_OPENAI_API_KEY": AZURE_KEY}):
+                    res = self.build(f"{provider}/set-p", choice, max_cost=5.0)
+                self.assertTrue(res["check"]["ok"])
+                calls = self.read(res, "calls.jsonl")
+                self.assertTrue(calls)
+                self.assertEqual({(c["provider"], c["endpoint"], c["model"]) for c in calls},
+                                 {(provider, endpoint, choice.model_id)})
+                self.assertTrue(all(c["price_usd_per_million"] == list(choice.price) for c in calls))
+                run = self.read(res, "run.json")
+                self.assertEqual((run["provider"], run["endpoint"], run["effort"], run["max_tokens"]),
+                                 (provider, endpoint, "high", choice.max_tokens))
+                m = res["manifest"]["model"]
+                self.assertEqual((m["provider"], m["endpoint"], m["effort"], m["max_tokens"], m["system_cache"]),
+                                 (provider, endpoint, "high", choice.max_tokens, cache))
+                self.assertEqual(rc.writer_label(m), f"{provider}/{choice.model_id}")
+                log = os.path.join(res["out"], "generation", "calls.jsonl")
+                with mock.patch.dict(sys.modules, {"openai": None, "anthropic": None}):
+                    again = self.build(f"{provider}/set-r", choice, replay=log)
+                self.assertEqual(self.read(again, "calls.jsonl"), calls)
+                self.assertEqual(again["manifest"]["model"], m)
+
+    def test_azure_and_bedrock_need_prices_for_the_guard(self):
+        for choice, platform in ((gq.ModelChoice("azure", "d", base_url=AZURE_URL), "Azure"),
+                                 (gq.ModelChoice("bedrock", aws_region="us-west-2"), "Bedrock")):
+            with self.subTest(platform=platform), self.assertRaises(gq.GenerateError) as cm:
+                self.build(f"{platform}/set-n", choice, max_cost=1.0)
+            self.assertIn(f"{platform} sets its own prices", str(cm.exception))
 
     def read(self, res, name):
         with open(os.path.join(res["out"], "generation", name), encoding="utf-8") as f:

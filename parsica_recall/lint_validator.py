@@ -382,12 +382,18 @@ def r_answer_not_in_question(item, rule, ctx):
     if _is_abstention(item):
         return []
     nq = rc.normalize(item.get("question"))
+    choice = item.get(rc.CHOICE) is True  # it offers its answer as one of two possibilities, on purpose
     out = []
     for field in ("answer", "acceptable_answers"):
         for value in _keys(item, field):
             if rc.contains_phrase(nq, rc.normalize(value)):
-                out.append(_finding(rule, "answer_in_question", f"The question contains its own answer ('{field}'): {value!r}",
-                                    field, value))
+                if choice:
+                    out.append(Finding(rule_id=rule["id"], severity="info", code="choice",
+                                       message=f"The question offers its answer ('{field}') as one of two "
+                                               f"possibilities: {value!r}", field=field, value=value))
+                else:
+                    out.append(_finding(rule, "answer_in_question",
+                                        f"The question contains its own answer ('{field}'): {value!r}", field, value))
     return out
 
 
@@ -402,12 +408,21 @@ def r_gold_multiplicity(item, rule, ctx):
     out = []
     reached = set()
     current = [c for c in rc.current_ids(item.get("must_rank_first")) if isinstance(c, str)]
+    # An item that carries common_answer says its answer is also found outside gold and that
+    # it is scored by record id alone: the runner leaves it out of the exact tier, so the leak
+    # is noted here and holds nothing (docs/generation.md section 6).
+    common = item.get(rc.COMMON_ANSWER) is True
     for field in ("answer", "acceptable_answers"):
         for value in _keys(item, field):
             norm = rc.normalize(value)
             hits = {ctx.ids[i] for i in ctx.index.matching(norm)}
             leaks = sorted(hits - gold)
-            if leaks:
+            if leaks and common:
+                out.append(Finding(rule_id=rule["id"], severity="info", code="common_answer",
+                                   message=f"'{field}' value {value!r} also appears in {len(leaks)} non-gold "
+                                           f"record(s); the item is scored by record id alone",
+                                   field=field, value=value))
+            elif leaks:
                 out.append(_finding(rule, "answer_in_other_record",
                                     f"'{field}' value {value!r} also appears in {len(leaks)} non-gold record(s): "
                                     f"{', '.join(leaks[:5])}", field, value))
