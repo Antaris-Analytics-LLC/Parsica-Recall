@@ -4,7 +4,7 @@ A deterministic benchmark for the memory of AI agents. It asks one question: whe
 
 Recall scores retrieval only. The judge never calls a model. The window it scores is set by the size of the store, not by the system being tested. Every number can be re-derived from the per-question records a run writes.
 
-- Version: `1.0.0b3`, a beta. Recall stays in beta until it has been adequately used or peer reviewed.
+- Version: `1.0.0b4`, a beta. Recall stays in beta until it has been adequately used or peer reviewed.
 - Spec: `recall/1.0`, in [docs/spec.md](https://github.com/Antaris-Analytics-LLC/Parsica-Recall/blob/main/docs/spec.md). Where the spec and the code disagree, the spec wins.
 - Current question set: `v11`, interim, over a public synthetic pool of 10,000 records. The schema has 13 categories.
 - License: MIT.
